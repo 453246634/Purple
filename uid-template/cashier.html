@@ -819,8 +819,8 @@
       <div class="key num" data-key="7">7</div>
       <div class="key num" data-key="8">8</div>
       <div class="key num" data-key="9">9</div>
-      <div class="key num" data-key="0">0</div>
       <div class="key num dot" data-key=".">.</div>
+      <div class="key num" data-key="0">0</div>
     </div>
   </div>
 
@@ -926,21 +926,6 @@ async function createQRCode() {
 
   // ===== UID 简易支付：直接跳 /pay 页面，让服务端 handleAlipayRedirect 处理跳转 =====
   if (IS_SIMPLE && MERCHANT_UID) {
-    const keyboardPayBtn = document.getElementById('keyboardPayBtn');
-    keyboardPayBtn.classList.add('key-disabled');
-    keyboardPayBtn.textContent = '跳转中...';
-
-    // 显示跳转加载状态，让用户知道正在处理
-    document.getElementById('inputSection').style.display = 'none';
-    document.getElementById('paySection').classList.add('show');
-    document.getElementById('payTitle').textContent = '跳转支付中...';
-    document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
-    document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
-    document.getElementById('paySubject').textContent = subject;
-    document.getElementById('payStatusMsg').textContent = '跳转支付中...';
-    document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
-    document.querySelector('#paySection .btn-group').innerHTML = '';
-
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
       method: 'POST',
@@ -952,10 +937,8 @@ async function createQRCode() {
       }
     }).catch(() => {});
 
-    // 检测是否在支付宝应用内webview中（修复码打开）
+    // 检测是否在支付宝应用内webview中
     if (isInAlipayWebview && window.AlipayJSBridge) {
-      // 在支付宝应用内webview中，用 AlipayJSBridge 原生API启动转账应用
-      // 不做302跳转（webview会拦截alipays://scheme导致交易中断），用startApp原生调用
       var biz = JSON.stringify({ s: 'money', u: MERCHANT_UID, a: parseFloat(amount).toFixed(2), m: subject });
       AlipayJSBridge.call('startApp', {
         appId: '20000123',
@@ -965,7 +948,6 @@ async function createQRCode() {
         }
       });
     } else {
-      // 非webview（原码HTTPS在安全浏览器打开），走/pay路由302跳转
       window.location.href = `${API_BASE}pay?amount=${encodeURIComponent(amount)}&uid=${encodeURIComponent(MERCHANT_UID)}&memo=${encodeURIComponent(subject)}`;
     }
 
@@ -974,21 +956,6 @@ async function createQRCode() {
 
   // ===== UID固码：在支付宝webview内直接发起转账（用户已在支付宝内，不需要再生成二维码扫）=====
   if (isInAlipayWebview && window.AlipayJSBridge && MERCHANT_UID) {
-    const keyboardPayBtn = document.getElementById('keyboardPayBtn');
-    keyboardPayBtn.classList.add('key-disabled');
-    keyboardPayBtn.textContent = '跳转中...';
-
-    // 显示跳转加载状态，让用户知道正在处理
-    document.getElementById('inputSection').style.display = 'none';
-    document.getElementById('paySection').classList.add('show');
-    document.getElementById('payTitle').textContent = '跳转支付中...';
-    document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
-    document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
-    document.getElementById('paySubject').textContent = subject;
-    document.getElementById('payStatusMsg').textContent = '跳转支付中...';
-    document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
-    document.querySelector('#paySection .btn-group').innerHTML = '';
-
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
       method: 'POST',

@@ -108,8 +108,44 @@
 
   /* 输入区域 */
   .amount-section {
+    position: relative;
     padding: 28px 4px 16px;
   }
+  .jump-loading-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.96);
+    border-radius: 12px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    text-align: center;
+  }
+  .jump-loading-overlay.show {
+    display: flex;
+  }
+  .jump-loading-overlay .spinner {
+    width: 44px;
+    height: 44px;
+    border: 3px solid rgba(74,144,217,0.2);
+    border-top-color: #4A90D9;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 16px;
+  }
+  .jump-loading-overlay .jump-text {
+    font-size: 16px;
+    color: #333;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .jump-loading-overlay .jump-sub {
+    font-size: 13px;
+    color: #999;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .amount-label {
     font-size: 14px;
     color: #999;
@@ -668,6 +704,12 @@
           </button>
         </div>
       </div>
+      <!-- 跳转支付加载层（当面付直付模式使用） -->
+      <div class="jump-loading-overlay" id="jumpLoadingOverlay">
+        <div class="spinner"></div>
+        <div class="jump-text">跳转支付中...</div>
+        <div class="jump-sub">即将打开支付宝完成支付</div>
+      </div>
     </div>
 
     <div class="remark-row">
@@ -765,8 +807,8 @@
       <div class="key num" data-key="7">7</div>
       <div class="key num" data-key="8">8</div>
       <div class="key num" data-key="9">9</div>
-      <div class="key num" data-key="0">0</div>
       <div class="key num dot" data-key=".">.</div>
+      <div class="key num" data-key="0">0</div>
     </div>
   </div>
 
@@ -858,16 +900,8 @@ async function createQRCode() {
       // 当面付直付模式：在支付宝内置浏览器中直接跳转支付链接
       const isDynamic = merchantType === 'face2face-dynamic';
       if (!isDynamic && isInAlipay && data.qr_code) {
-        // 显示跳转加载状态，让用户知道正在处理
-        document.getElementById('inputSection').style.display = 'none';
-        document.getElementById('paySection').classList.add('show');
-        document.getElementById('payTitle').textContent = '跳转支付中...';
-        document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
-        document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
-        document.getElementById('paySubject').textContent = subject;
-        document.getElementById('payStatusMsg').textContent = '跳转支付中...';
-        document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
-        document.querySelector('#paySection .btn-group').innerHTML = '';
+        // 在输入区域中间显示跳转支付中，保持键盘和页面可见
+        document.getElementById('jumpLoadingOverlay').classList.add('show');
         startPolling();
         window.location.href = data.qr_code;
         return;
@@ -987,6 +1021,7 @@ function resetToInput() {
   document.getElementById('paySection').classList.remove('show');
   document.getElementById('successSection').classList.remove('show');
   document.getElementById('inputSection').style.display = '';
+  document.getElementById('jumpLoadingOverlay').classList.remove('show');
 
   // 恢复头部
   document.querySelector('.merchant-header').classList.remove('compact');
