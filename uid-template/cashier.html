@@ -878,7 +878,7 @@ async function createQRCode() {
   const keyboardPayBtn = document.getElementById('keyboardPayBtn');
   if (keyboardPayBtn) {
     keyboardPayBtn.classList.add('key-disabled');
-    keyboardPayBtn.textContent = '生成中...';
+    keyboardPayBtn.textContent = '支付中...';
   }
   // 并行拉取管理系统配置（开关+限额）和限额配置，减少等待时间
   await Promise.all([fetchMgrConfig(), fetchLimitConfig()]);
