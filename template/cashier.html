@@ -225,6 +225,8 @@
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;
+    pointer-events: auto;
+    -webkit-touch-callout: none;
   }
   .key:active, .key.active {
     background: #f0f0f0;
@@ -745,25 +747,25 @@
     </div>
   </div>
 
-  <!-- 支付宝安全键盘（每个按键直接绑定 ontouchend，不用事件委托/closest/防抖） -->
+  <!-- 支付宝安全键盘（容器委托 + touchstart，按下即触发） -->
   <div class="secure-keyboard show" id="secureKeyboard">
     <div class="keyboard-title">支付宝安全键盘</div>
     <div class="keyboard-grid">
-      <button class="key num" type="button" data-key="1" ontouchend="keyTap(this,event)">1</button>
-      <button class="key num" type="button" data-key="2" ontouchend="keyTap(this,event)">2</button>
-      <button class="key num" type="button" data-key="3" ontouchend="keyTap(this,event)">3</button>
-      <button class="key backspace" type="button" data-key="backspace" ontouchend="keyTap(this,event)">
+      <button class="key num" type="button" data-key="1">1</button>
+      <button class="key num" type="button" data-key="2">2</button>
+      <button class="key num" type="button" data-key="3">3</button>
+      <button class="key backspace" type="button" data-key="backspace">
         <svg viewBox="0 0 24 24"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"></path><line x1="18" y1="9" x2="12" y2="15"></line><line x1="12" y1="9" x2="18" y2="15"></line></svg>
       </button>
-      <button class="key num" type="button" data-key="4" ontouchend="keyTap(this,event)">4</button>
-      <button class="key num" type="button" data-key="5" ontouchend="keyTap(this,event)">5</button>
-      <button class="key num" type="button" data-key="6" ontouchend="keyTap(this,event)">6</button>
-      <button class="key pay" type="button" id="keyboardPayBtn" ontouchend="keyTap(this,event)">付款</button>
-      <button class="key num" type="button" data-key="7" ontouchend="keyTap(this,event)">7</button>
-      <button class="key num" type="button" data-key="8" ontouchend="keyTap(this,event)">8</button>
-      <button class="key num" type="button" data-key="9" ontouchend="keyTap(this,event)">9</button>
-      <button class="key num" type="button" data-key="0" ontouchend="keyTap(this,event)">0</button>
-      <button class="key num dot" type="button" data-key="." ontouchend="keyTap(this,event)">.</button>
+      <button class="key num" type="button" data-key="4">4</button>
+      <button class="key num" type="button" data-key="5">5</button>
+      <button class="key num" type="button" data-key="6">6</button>
+      <button class="key pay" type="button" id="keyboardPayBtn">付款</button>
+      <button class="key num" type="button" data-key="7">7</button>
+      <button class="key num" type="button" data-key="8">8</button>
+      <button class="key num" type="button" data-key="9">9</button>
+      <button class="key num" type="button" data-key="0">0</button>
+      <button class="key num dot" type="button" data-key=".">.</button>
     </div>
   </div>
 
@@ -1228,23 +1230,57 @@ document.querySelector('.amount-input-wrap').addEventListener('click', function(
   updateAmountInputWidth();
 });
 
-// 键盘按键处理（每个按键直接在 HTML 上 ontouchend="keyTap(this,event)"）
-function keyTap(btn, e) {
-  if (!btn) return;
-  e.preventDefault();           // 阻止 touchend 后触发 click 重复执行
-  e.stopPropagation();
-  btn.classList.add('active');
-  setTimeout(function() { btn.classList.remove('active'); }, 120);
+// ==================== 键盘事件（容器委托 + touchstart，按下即触发，彻底重构） ====================
+(function initKeyboard() {
+  var keyboardEl = document.getElementById('secureKeyboard');
+  if (!keyboardEl) return;
 
-  var key = btn.getAttribute('data-key');
-  if (key === 'backspace') {
-    backspaceAmount();
-  } else if (btn.classList.contains('pay')) {
-    if (!btn.disabled) createQRCode();
-  } else if (key !== null) {
-    appendAmountKey(key);
+  // 从触摸点向上查找 .key 按钮（兼容不支持 closest 的旧 WebView）
+  function findKey(el) {
+    while (el && el !== keyboardEl) {
+      if (el.classList && el.classList.contains('key')) return el;
+      el = el.parentElement;
+    }
+    return null;
   }
-}
+
+  function handleKeyPress(btn) {
+    // 同一按钮 180ms 内不重复触发（防抖 per-key，不同按钮不互斥）
+    var now = Date.now();
+    var lastTap = parseInt(btn.getAttribute('data-last-tap')) || 0;
+    if (now - lastTap < 180) return;
+    btn.setAttribute('data-last-tap', now);
+
+    // 视觉反馈
+    btn.classList.add('active');
+    setTimeout(function() { btn.classList.remove('active'); }, 150);
+
+    // 执行按键逻辑
+    var key = btn.getAttribute('data-key');
+    if (key === 'backspace') {
+      backspaceAmount();
+    } else if (btn.classList.contains('pay')) {
+      if (!btn.disabled) createQRCode();
+    } else if (key !== null) {
+      appendAmountKey(key);
+    }
+  }
+
+  // 移动端：touchstart 立即触发，无延迟，无 click 冲突
+  keyboardEl.addEventListener('touchstart', function(e) {
+    var btn = findKey(e.target);
+    if (!btn) return;
+    e.preventDefault();
+    handleKeyPress(btn);
+  }, { passive: false });
+
+  // 桌面端：mousedown 后备
+  keyboardEl.addEventListener('mousedown', function(e) {
+    var btn = findKey(e.target);
+    if (!btn) return;
+    handleKeyPress(btn);
+  });
+})();
 
 // 初始化品牌名：脚本底部直接调用，DOM 已就绪，无竞态风险
 fetchMgrConfig();
