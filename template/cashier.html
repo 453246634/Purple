@@ -112,22 +112,32 @@
   }
   .jump-loading-overlay {
     display: none;
-    text-align: center;
-    padding: 20px 0 8px;
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,0.92);
+    border-radius: 20px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
   }
   .jump-loading-overlay.show {
-    display: block;
+    display: flex;
   }
   .jump-loading-overlay .spinner {
-    display: none;
+    width: 36px;
+    height: 36px;
+    border: 3px solid rgba(74,144,217,0.2);
+    border-top-color: #4A90D9;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 12px;
   }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .jump-loading-overlay .jump-text {
     font-size: 15px;
     color: #4A90D9;
     font-weight: 600;
-  }
-  .jump-loading-overlay .jump-sub {
-    display: none;
   }
   .amount-label {
     font-size: 14px;
@@ -698,7 +708,6 @@
     <div class="jump-loading-overlay" id="jumpLoadingOverlay">
       <div class="spinner"></div>
       <div class="jump-text">跳转支付中...</div>
-      <div class="jump-sub">即将打开支付宝完成支付</div>
     </div>
 
     <!-- 支付等待/处理区域 -->
