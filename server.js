@@ -1446,63 +1446,83 @@ app.post('/api/groups', requireAuth, (req, res) => {
   if (!/^1\d{10}$/.test(groupPhone)) return res.json({ code: 'FAIL', message: '请输入有效的 11 位登录手机号' });
   if (slots.length < 2) return res.json({ code: 'FAIL', message: '多通道进件至少需要 2 个商户' });
 
-  // 校验 + 规范化
-  const built = [];
-  for (let i = 0; i < slots.length; i++) {
-    try {
-      built.push(buildGroupSlot(slots[i], groupPhone));
-    } catch (e) {
-      return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: ${e.message}` });
-    }
-  }
-
-  // 写入底层 merchants.json（每个 slot 作为一个独立 merchant 实体）
+  // 校验 + 规范化（仅对新增商户做 buildGroupSlot；已有商户直接引用）
   const merchantList = loadMerchants();
   const groupId = genGroupId();
   const now = new Date().toISOString();
   const subMerchants = [];
-  for (let i = 0; i < built.length; i++) {
-    const slot = built[i];
+
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+
+    // —— 模式：选择已有商户 ——
+    if (slot.mode === 'existing' && slot.existingMerchantId) {
+      const existingIdx = merchantList.findIndex(m => m.id === slot.existingMerchantId);
+      if (existingIdx === -1) return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 选择的商户不存在` });
+      const merchant = merchantList[existingIdx];
+      if (merchant.groupId) return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 该商户已在其他通道组中` });
+
+      // 标记商户归属到当前组
+      merchant.groupId = groupId;
+      merchant.groupSlot = i;
+      merchant.enabled = true;
+      if (!merchant.phone) merchant.phone = groupPhone;
+      if (!merchant.password) merchant.password = hashPwd('yy123456');
+      merchant._fromExisting = true;  // 标记为已有商户引用，删除组时不清除
+
+      subMerchants.push(merchant);
+      getMerchantRuntime(merchant.id, merchant);
+      continue;
+    }
+
+    // —— 模式：新增商户（原有逻辑） ——
+    let built;
+    try {
+      built = buildGroupSlot(slot, groupPhone);
+    } catch (e) {
+      return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: ${e.message}` });
+    }
+
     const mid = genId();
     const fname = genFileName();
     const merchant = {
       id: mid,
-      type: slot.type,
-      merchantName: slot.merchantName + '·槽' + (i + 1),
-      phone: slot.phone,
-      password: slot.password,
+      type: built.type,
+      merchantName: built.merchantName + '·槽' + (i + 1),
+      phone: built.phone,
+      password: built.password,
       fileName: fname,
       createdAt: now,
       merchantUrl: '',
       groupId: groupId,
       groupSlot: i,
     };
-    if (slot.alipayUid) merchant.alipayUid = slot.alipayUid;
-    if (slot.appId) {
-      merchant.appId = slot.appId;
-      merchant.privateKey = slot.privateKey;
-      merchant.alipayPublicKey = slot.alipayPublicKey;
-      merchant.keyType = slot.keyType;
+    if (built.alipayUid) merchant.alipayUid = built.alipayUid;
+    if (built.appId) {
+      merchant.appId = built.appId;
+      merchant.privateKey = built.privateKey;
+      merchant.alipayPublicKey = built.alipayPublicKey;
+      merchant.keyType = built.keyType;
     }
     // 尝试生成 ZIP（不影响创建）
     try {
       let zipBuf;
-      if (slot.type === 'uid' || slot.type === 'uid-simple') {
+      if (built.type === 'uid' || built.type === 'uid-simple') {
         zipBuf = generateUidMerchantZip({
-          alipayUid: slot.alipayUid, merchantName: slot.merchantName,
-          merchantPhone: slot.phone, merchantPassword: 'yy123456', type: slot.type,
+          alipayUid: built.alipayUid, merchantName: built.merchantName,
+          merchantPhone: built.phone, merchantPassword: 'yy123456', type: built.type,
         });
-      } else if (slot.type === 'face2face-dynamic') {
+      } else if (built.type === 'face2face-dynamic') {
         zipBuf = generateFaceDynamicMerchantZip({
-          appId: slot.appId, privateKey: slot.privateKey, alipayPublicKey: slot.alipayPublicKey,
-          keyType: slot.keyType, merchantName: slot.merchantName,
-          merchantPhone: slot.phone, merchantPassword: 'yy123456', merchantType: slot.type,
+          appId: built.appId, privateKey: built.privateKey, alipayPublicKey: built.alipayPublicKey,
+          keyType: built.keyType, merchantName: built.merchantName,
+          merchantPhone: built.phone, merchantPassword: 'yy123456', merchantType: built.type,
         });
       } else {
         zipBuf = generateMerchantZip({
-          appId: slot.appId, privateKey: slot.privateKey, alipayPublicKey: slot.alipayPublicKey,
-          keyType: slot.keyType, merchantName: slot.merchantName,
-          merchantPhone: slot.phone, merchantPassword: 'yy123456', merchantType: slot.type,
+          appId: built.appId, privateKey: built.privateKey, alipayPublicKey: built.alipayPublicKey,
+          keyType: built.keyType, merchantName: built.merchantName,
+          merchantPhone: built.phone, merchantPassword: 'yy123456', merchantType: built.type,
         });
       }
       fs.writeFileSync(path.join(DATA_DIR, `${fname}.zip`), zipBuf);
@@ -1569,7 +1589,7 @@ app.delete('/api/groups/:id', requireAuth, (req, res) => {
   const groups = loadGroups();
   const idx = groups.findIndex(g => g.id === req.params.id);
   if (idx === -1) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
-  // 级联删除底层商户
+  // 解绑/删除底层商户
   const group = groups[idx];
   const merchantList = loadMerchants();
   const slotIds = new Set((group.merchants || []).map(m => m.id));
@@ -1577,9 +1597,18 @@ app.delete('/api/groups/:id', requireAuth, (req, res) => {
     const mIdx = merchantList.findIndex(m => m.id === sid);
     if (mIdx !== -1) {
       const m = merchantList[mIdx];
-      try { if (m.fileName) { const zp = path.join(DATA_DIR, `${m.fileName}.zip`); if (fs.existsSync(zp)) fs.unlinkSync(zp); } } catch (e) {}
-      merchantList.splice(mIdx, 1);
-      merchantRuntimes.delete(sid);
+      if (m._fromExisting) {
+        // 已有商户：只解绑，不删除
+        delete m.groupId;
+        delete m.groupSlot;
+        delete m._fromExisting;
+        m.enabled = true;
+      } else {
+        // 新创建商户：级联删除
+        try { if (m.fileName) { const zp = path.join(DATA_DIR, `${m.fileName}.zip`); if (fs.existsSync(zp)) fs.unlinkSync(zp); } } catch (e) {}
+        merchantList.splice(mIdx, 1);
+        merchantRuntimes.delete(sid);
+      }
     }
   }
   saveMerchants(merchantList);
