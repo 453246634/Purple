@@ -801,8 +801,6 @@ async function createQRCode() {
     keyboardPayBtn.classList.add('key-disabled');
     keyboardPayBtn.textContent = '生成中...';
   }
-  hideSecureKeyboard();
-
   // 每次生成前先拉取最新限额配置，确保后台修改能实时同步到收银台（并行请求减少等待）
   await Promise.all([fetchLimitConfig(), fetchMgrConfig()]);
 
@@ -857,9 +855,19 @@ async function createQRCode() {
       currentOutTradeNo = data.out_trade_no;
       lastQrImage = data.qr_image || '';
 
-      // 当面付直付模式：在支付宝内置浏览器中直接跳转支付链接，不显示第二个二维码
+      // 当面付直付模式：在支付宝内置浏览器中直接跳转支付链接
       const isDynamic = merchantType === 'face2face-dynamic';
       if (!isDynamic && isInAlipay && data.qr_code) {
+        // 显示跳转加载状态，让用户知道正在处理
+        document.getElementById('inputSection').style.display = 'none';
+        document.getElementById('paySection').classList.add('show');
+        document.getElementById('payTitle').textContent = '跳转支付中...';
+        document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
+        document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
+        document.getElementById('paySubject').textContent = subject;
+        document.getElementById('payStatusMsg').textContent = '跳转支付中...';
+        document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
+        document.querySelector('#paySection .btn-group').innerHTML = '';
         startPolling();
         window.location.href = data.qr_code;
         return;

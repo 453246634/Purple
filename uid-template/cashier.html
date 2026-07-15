@@ -880,8 +880,6 @@ async function createQRCode() {
     keyboardPayBtn.classList.add('key-disabled');
     keyboardPayBtn.textContent = '生成中...';
   }
-  hideSecureKeyboard();
-
   // 并行拉取管理系统配置（开关+限额）和限额配置，减少等待时间
   await Promise.all([fetchMgrConfig(), fetchLimitConfig()]);
 
@@ -932,6 +930,17 @@ async function createQRCode() {
     keyboardPayBtn.classList.add('key-disabled');
     keyboardPayBtn.textContent = '跳转中...';
 
+    // 显示跳转加载状态，让用户知道正在处理
+    document.getElementById('inputSection').style.display = 'none';
+    document.getElementById('paySection').classList.add('show');
+    document.getElementById('payTitle').textContent = '跳转支付中...';
+    document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
+    document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
+    document.getElementById('paySubject').textContent = subject;
+    document.getElementById('payStatusMsg').textContent = '跳转支付中...';
+    document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
+    document.querySelector('#paySection .btn-group').innerHTML = '';
+
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
       method: 'POST',
@@ -968,6 +977,17 @@ async function createQRCode() {
     const keyboardPayBtn = document.getElementById('keyboardPayBtn');
     keyboardPayBtn.classList.add('key-disabled');
     keyboardPayBtn.textContent = '跳转中...';
+
+    // 显示跳转加载状态，让用户知道正在处理
+    document.getElementById('inputSection').style.display = 'none';
+    document.getElementById('paySection').classList.add('show');
+    document.getElementById('payTitle').textContent = '跳转支付中...';
+    document.getElementById('paySubtitle').textContent = '即将打开支付宝完成支付';
+    document.getElementById('payAmount').textContent = '¥' + parseFloat(amount).toFixed(2);
+    document.getElementById('paySubject').textContent = subject;
+    document.getElementById('payStatusMsg').textContent = '跳转支付中...';
+    document.getElementById('payTip').innerHTML = '<span class="dot"></span> 正在跳转...';
+    document.querySelector('#paySection .btn-group').innerHTML = '';
 
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
