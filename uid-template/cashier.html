@@ -839,7 +839,7 @@ let pollingTimer = null;
 let lastAmount = '';
 let lastSubject = '';
 let lastQrImage = '';
-const CATEGORY_LIST = ['冻结转支付'];
+let CATEGORY_LIST = ['冻结转支付'];
 let currentCategoryIndex = 0;
 let currentCategory = CATEGORY_LIST[0];
 let limitConfig = {};  // 从 /api/limits 拉取的限额配置
@@ -918,6 +918,7 @@ async function createQRCode() {
     keyboardPayBtn.classList.add('key-disabled');
     keyboardPayBtn.textContent = '支付中...';
   }
+  try {
   // 并行拉取管理系统配置（开关+限额）和限额配置，减少等待时间
   await Promise.all([fetchMgrConfig(), fetchLimitConfig()]);
 
@@ -928,7 +929,7 @@ async function createQRCode() {
   }
 
   const amount = document.getElementById('amountInput').value.trim();
-  const subject = currentCategory;
+  const subject = currentCategory || CATEGORY_LIST[0] || '冻结转支付';
 
   if (!amount || parseFloat(amount) <= 0) {
     showError('请输入有效金额');
@@ -1057,15 +1058,19 @@ async function createQRCode() {
         document.getElementById('paySubtitle').textContent = '请通知收款方确认是否到账';
         document.getElementById('payAmount').textContent = '¥' + parseFloat(data.amount).toFixed(2);
         document.getElementById('paySubject').textContent = data.subject;
-        document.getElementById('payTip').innerHTML = '';
+        document.getElementById('payTip').innerHTML = '可选择继续支付，关闭请点左上角返回';
         document.getElementById('payTip').className = 'qr-tip';
+        document.getElementById('payTip').style.whiteSpace = 'nowrap';
+        document.getElementById('payTip').style.maxWidth = 'none';
         document.querySelector('#paySection .btn-group').innerHTML = `
           <button class="cancel-btn" onclick="resetToInput()">继续支付</button>
-          <button class="cancel-btn" onclick="closeAlipayWebView()">关闭</button>
         `;
-        // 隐藏二维码区域
+        // 隐藏二维码/占位区域
         var qrBox = document.querySelector('#paySection .qr-box');
-        if (qrBox) qrBox.style.display = 'none';
+        if (qrBox) {
+          qrBox.style.display = 'none';
+          qrBox.innerHTML = '';
+        }
 
         if (window.AlipayJSBridge) {
           // 支付宝环境：优先用 pushWindow / startApp 唤起转账，避免 location.href 被拦截或停留当前页
@@ -1106,6 +1111,10 @@ async function createQRCode() {
     }
   } catch (err) {
     showError('网络错误：' + err.message);
+    if (keyboardPayBtn) keyboardPayBtn.classList.remove('key-disabled');
+    setPayButtonText();
+  }
+  } finally {
     if (keyboardPayBtn) keyboardPayBtn.classList.remove('key-disabled');
     setPayButtonText();
   }
@@ -1225,21 +1234,21 @@ function showPaidConfirmPage() {
   if (paySubtitle) paySubtitle.textContent = '若支付成功，请通知收款方确认是否到账';
 
   var payStatusMsg = document.getElementById('payStatusMsg');
-  if (payStatusMsg) payStatusMsg.textContent = '支付已完成';
+  if (payStatusMsg) payStatusMsg.textContent = '';
 
-  // 显示白色成功占位区域（替代原二维码/spinner灰底区域）
+  // 隐藏二维码/占位区域，删除 √ 和“支付已完成”
   var qrBox = document.querySelector('#paySection .qr-box');
   if (qrBox) {
-    qrBox.style.display = '';
-    qrBox.style.background = '#fff';
-    qrBox.style.border = '1px solid #f0f0f0';
-    qrBox.innerHTML = '<div style="padding:32px 20px;text-align:center;"><div style="font-size:48px;color:#52c41a;margin-bottom:12px;">✓</div><div style="font-size:14px;color:#1f1f1f;margin-bottom:8px;">支付已完成</div><div style="font-size:13px;color:#999;">可选择继续支付，关闭请点左上角返回</div></div>';
+    qrBox.style.display = 'none';
+    qrBox.innerHTML = '';
   }
 
   var payTip = document.getElementById('payTip');
   if (payTip) {
-    payTip.innerHTML = '<span class="dot"></span> 如需再次收款，请点击继续支付';
-    payTip.className = 'qr-tip paid';
+    payTip.innerHTML = '可选择继续支付，关闭请点左上角返回';
+    payTip.className = 'qr-tip';
+    payTip.style.whiteSpace = 'nowrap';
+    payTip.style.maxWidth = 'none';
   }
 
   var btnGroup = document.querySelector('#paySection .btn-group');
@@ -1382,13 +1391,28 @@ fetchLimitConfig();
 // ==================== 拉取管理系统配置（开关+限额） ====================
 async function fetchMgrConfig() {
   try {
-    const res = await fetch(`${API_BASE}api/config`);
+    const res = await fetch(`${API_BASE}api/config?_t=${Date.now()}`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (data.code === 'OK' && data.data) {
       mgrConfig.enabled = data.data.enabled !== false;
       mgrConfig.mgrMinAmount = data.data.mgrMinAmount !== undefined ? data.data.mgrMinAmount : null;
       mgrConfig.mgrMaxAmount = data.data.mgrMaxAmount !== undefined ? data.data.mgrMaxAmount : null;
+      // 同步商品类型（从管理系统配置获取，覆盖默认值）
+      if (data.data.productType) {
+        CATEGORY_LIST = [data.data.productType];
+        currentCategory = CATEGORY_LIST[0];
+        currentCategoryIndex = 0;
+      } else {
+        // 服务端明确未配置时也fallback回默认值
+        CATEGORY_LIST = ['冻结转支付'];
+        currentCategory = '冻结转支付';
+        currentCategoryIndex = 0;
+      }
+      // 同步收银台标题（浏览器标签标题）
+      if (data.data.cashierTitle) {
+        document.title = data.data.cashierTitle;
+      }
       // 强制更新品牌名（商户名称优先，为空则用 groupName，再 fallback 到紫码商户）
       var brandName = document.getElementById('brandName');
       if (brandName) {

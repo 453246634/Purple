@@ -71,12 +71,16 @@ async function createTables(pool) {
       zip_generated BOOLEAN DEFAULT false,
       group_id VARCHAR(32),
       group_slot INTEGER,
+      product_type VARCHAR(128),
+      cashier_title VARCHAR(128),
       created_at TIMESTAMP
     );`);
 
-  // 兼容旧表：如果旧表缺少 group_id/group_slot 列，则 ALTER TABLE 添加
+  // 兼容旧表：如果旧表缺少列，则 ALTER TABLE 添加
   try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS group_id VARCHAR(32)'); } catch (e) {}
   try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS group_slot INTEGER'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS product_type VARCHAR(128)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cashier_title VARCHAR(128)'); } catch (e) {}
 
 
   await pool.query(`
@@ -96,6 +100,18 @@ async function createTables(pool) {
       round_count INTEGER DEFAULT 0
     );`);
 
+  // 兼容旧表：如果 merchant_groups 缺少 next_index/round_count 列（早期版本创建的表），则 ALTER TABLE 添加
+  // 否则 syncGroupsToDb 的 INSERT 会因列不存在失败 → group 永远写不进 DB → 重启后丢失
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS next_index INTEGER DEFAULT 0'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS round_count INTEGER DEFAULT 0'); } catch (e) {}
+  // 兼容早期 merchants JSONB 列可能不存在的情况
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS merchants JSONB'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS phone VARCHAR(16)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS merchant_name VARCHAR(128)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS merchant_contact VARCHAR(128)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS name VARCHAR(128)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP'); } catch (e) {}
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS merchant_json_data (
       merchant_id VARCHAR(32) NOT NULL,
@@ -106,77 +122,121 @@ async function createTables(pool) {
 }
 
 async function restoreFromDb(pool) {
+  // 注意：每个恢复步骤必须独立 try/catch，否则前置步骤（如 merchant_json_data）抛异常会拖垮后续的 groups 恢复
+  // 这是「每次部署后多通道组丢失」的关键根因之一
+
   // Restore merchants
-  const { rows } = await pool.query('SELECT * FROM merchants');
-  if (rows.length > 0) {
-    const merchants = rows.map(r => ({
-      id: r.id,
-      type: r.type,
-      merchantName: r.merchant_name,
-      phone: r.phone,
-      password: r.password,
-      alipayUid: r.alipay_uid,
-      fileName: r.file_name,
-      appId: r.app_id,
-      privateKey: r.private_key,
-      alipayPublicKey: r.alipay_public_key,
-      keyType: r.key_type,
-      merchantUrl: r.merchant_url,
-      enabled: r.enabled,
-      mgrMinAmount: r.mgr_min_amount,
-      mgrMaxAmount: r.mgr_max_amount,
-      zipGenerated: r.zip_generated,
-      groupId: r.group_id,
-      groupSlot: r.group_slot,
-      createdAt: r.created_at
-    }));
-    fs.writeFileSync(MERCHANTS_FILE, JSON.stringify(merchants, null, 2), 'utf-8');
-    console.log('[DB] 已恢复', merchants.length, '个商户');
-  } else {
-    // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
-    const localMerchants = loadMerchants();
-    if (localMerchants.length > 0) {
-      console.log('[DB] 数据库无商户，从本地文件同步到数据库...');
-      syncMerchantsToDb(pool, localMerchants).catch(err => console.error('[DB] 反向同步 merchants 失败:', err.message));
+  try {
+    const { rows } = await pool.query('SELECT * FROM merchants');
+    if (rows.length > 0) {
+      const merchants = rows.map(r => ({
+        id: r.id,
+        type: r.type,
+        merchantName: r.merchant_name,
+        phone: r.phone,
+        password: r.password,
+        alipayUid: r.alipay_uid,
+        fileName: r.file_name,
+        appId: r.app_id,
+        privateKey: r.private_key,
+        alipayPublicKey: r.alipay_public_key,
+        keyType: r.key_type,
+        merchantUrl: r.merchant_url,
+        enabled: r.enabled,
+        mgrMinAmount: r.mgr_min_amount,
+        mgrMaxAmount: r.mgr_max_amount,
+        zipGenerated: r.zip_generated,
+        groupId: r.group_id,
+        groupSlot: r.group_slot,
+        productType: r.product_type,
+        cashierTitle: r.cashier_title,
+        createdAt: r.created_at
+      }));
+      fs.writeFileSync(MERCHANTS_FILE, JSON.stringify(merchants, null, 2), 'utf-8');
+      console.log('[DB] 已恢复', merchants.length, '个商户');
+    } else {
+      // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
+      const localMerchants = loadMerchants();
+      if (localMerchants.length > 0) {
+        console.log('[DB] 数据库无商户，从本地文件同步到数据库...');
+        syncMerchantsToDb(pool, localMerchants).catch(err => console.error('[DB] 反向同步 merchants 失败:', err.message));
+      }
     }
+  } catch (err) {
+    console.error('[DB] 恢复商户失败（已跳过，继续恢复其他数据）:', err.message);
   }
 
   // Restore admin config
-  const { rows: adminRows } = await pool.query('SELECT * FROM admin_config WHERE id = 1');
-  if (adminRows.length > 0) {
-    fs.writeFileSync(ADMIN_CONFIG_FILE, JSON.stringify({ password: adminRows[0].password }, null, 2), 'utf-8');
-    console.log('[DB] 已恢复管理员配置');
+  try {
+    const { rows: adminRows } = await pool.query('SELECT * FROM admin_config WHERE id = 1');
+    if (adminRows.length > 0) {
+      fs.writeFileSync(ADMIN_CONFIG_FILE, JSON.stringify({ password: adminRows[0].password }, null, 2), 'utf-8');
+      console.log('[DB] 已恢复管理员配置');
+    }
+  } catch (err) {
+    console.error('[DB] 恢复管理员配置失败（已跳过）:', err.message);
   }
 
   // Restore merchant JSON data
-  const { rows: dataRows } = await pool.query('SELECT * FROM merchant_json_data');
-  for (const row of dataRows) {
-    const dir = getMerchantDir(row.merchant_id);
-    fs.writeFileSync(path.join(dir, row.data_name + '.json'), JSON.stringify(row.data_json, null, 2), 'utf-8');
-  }
-  if (dataRows.length > 0) {
-    console.log('[DB] 已恢复', dataRows.length, '条商户数据');
+  try {
+    const { rows: dataRows } = await pool.query('SELECT * FROM merchant_json_data');
+    for (const row of dataRows) {
+      try {
+        const dir = getMerchantDir(row.merchant_id);
+        fs.writeFileSync(path.join(dir, row.data_name + '.json'), JSON.stringify(row.data_json, null, 2), 'utf-8');
+      } catch (e) {
+        // 单条记录写文件失败不影响其他记录
+        console.error('[DB] 恢复商户数据失败 merchant_id=' + row.merchant_id + ' data_name=' + row.data_name + ':', e.message);
+      }
+    }
+    if (dataRows.length > 0) {
+      console.log('[DB] 已恢复', dataRows.length, '条商户数据');
+    }
+  } catch (err) {
+    console.error('[DB] 恢复商户数据失败（已跳过，继续恢复多通道组）:', err.message);
   }
 
   // Restore merchant groups
-  const { rows: groupRows } = await pool.query('SELECT * FROM merchant_groups');
-  const localGroups = loadGroups(); // 读取本地文件
-  if (groupRows.length > 0) {
-    const groups = groupRows.map(r => ({
-      id: r.id,
-      name: r.name,
-      phone: r.phone,
-      merchants: r.merchants,
-      createdAt: r.created_at,
-      nextIndex: r.next_index || 0,
-      roundCount: r.round_count || 0,
-    }));
-    fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf-8');
-    console.log('[DB] 已恢复', groups.length, '个多通道组');
-  } else if (localGroups.length > 0) {
-    // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
-    console.log('[DB] 数据库无多通道组，从本地文件同步到数据库...');
-    syncGroupsToDb(pool, localGroups).catch(err => console.error('[DB] 反向同步 groups 失败:', err.message));
+  try {
+    const { rows: groupRows } = await pool.query('SELECT * FROM merchant_groups');
+    const localGroups = loadGroups(); // 读取本地文件
+    console.log('[DB] merchant_groups 表查询: DB 有', groupRows.length, '个组, 本地有', localGroups.length, '个组');
+    if (groupRows.length > 0) {
+      const groups = groupRows.map(r => ({
+        id: r.id,
+        name: r.name,
+        merchantName: r.merchant_name,
+        merchantContact: r.merchant_contact,
+        phone: r.phone,
+        merchants: r.merchants,
+        createdAt: r.created_at,
+        nextIndex: r.next_index || 0,
+        roundCount: r.round_count || 0,
+      }));
+      fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf-8');
+      console.log('[DB] 已恢复', groups.length, '个多通道组');
+    } else if (localGroups.length > 0) {
+      // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
+      console.log('[DB] 数据库无多通道组，从本地文件同步到数据库...');
+      syncGroupsToDb(pool, localGroups).catch(err => console.error('[DB] 反向同步 groups 失败:', err.message));
+    } else {
+      // DB 空 + 本地空：尝试从 .bak 备份恢复（syncGroupsToDb 失败时会写 .bak）
+      const bakFile = GROUPS_FILE + '.bak';
+      if (fs.existsSync(bakFile)) {
+        try {
+          const bakGroups = JSON.parse(fs.readFileSync(bakFile, 'utf-8'));
+          if (Array.isArray(bakGroups) && bakGroups.length > 0) {
+            fs.writeFileSync(GROUPS_FILE, JSON.stringify(bakGroups, null, 2), 'utf-8');
+            console.log('[DB] 从 .bak 备份恢复', bakGroups.length, '个多通道组，并反向同步到数据库');
+            syncGroupsToDb(pool, bakGroups).catch(err => console.error('[DB] 从 .bak 反向同步 groups 失败:', err.message));
+          }
+        } catch (e) {
+          console.error('[DB] 读取 groups.json.bak 失败:', e.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[DB] 恢复多通道组失败:', err.message);
   }
 }
 
@@ -187,21 +247,22 @@ async function syncMerchantsToDb(pool, list) {
     await client.query('DELETE FROM merchants');
     for (const m of list) {
       await client.query(
-        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, group_id, group_slot, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, group_id, group_slot, product_type, cashier_title, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
          ON CONFLICT (id) DO UPDATE SET
            type=EXCLUDED.type, merchant_name=EXCLUDED.merchant_name, phone=EXCLUDED.phone,
            password=EXCLUDED.password, alipay_uid=EXCLUDED.alipay_uid, file_name=EXCLUDED.file_name,
            app_id=EXCLUDED.app_id, private_key=EXCLUDED.private_key, alipay_public_key=EXCLUDED.alipay_public_key,
            key_type=EXCLUDED.key_type, merchant_url=EXCLUDED.merchant_url, enabled=EXCLUDED.enabled,
            mgr_min_amount=EXCLUDED.mgr_min_amount, mgr_max_amount=EXCLUDED.mgr_max_amount,
-           zip_generated=EXCLUDED.zip_generated, group_id=EXCLUDED.group_id, group_slot=EXCLUDED.group_slot, created_at=EXCLUDED.created_at`,
+           zip_generated=EXCLUDED.zip_generated, group_id=EXCLUDED.group_id, group_slot=EXCLUDED.group_slot,
+           product_type=EXCLUDED.product_type, cashier_title=EXCLUDED.cashier_title, created_at=EXCLUDED.created_at`,
         [m.id, m.type, m.merchantName || null, m.phone || null, m.password || null,
          m.alipayUid || null, m.fileName || null, m.appId || null, m.privateKey || null,
          m.alipayPublicKey || null, m.keyType || null, m.merchantUrl || null,
          m.enabled !== false, m.mgrMinAmount || null, m.mgrMaxAmount || null,
          m.zipGenerated || false, m.groupId || null, m.groupSlot !== undefined ? m.groupSlot : null,
-         m.createdAt || null]
+         m.productType || null, m.cashierTitle || null, m.createdAt || null]
       );
     }
     await client.query('COMMIT');
@@ -236,12 +297,12 @@ async function syncGroupsToDb(pool, list) {
     await client.query('DELETE FROM merchant_groups');
     for (const g of list) {
       await client.query(
-        `INSERT INTO merchant_groups (id, name, phone, merchants, created_at, next_index, round_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO merchant_groups (id, name, merchant_name, merchant_contact, phone, merchants, created_at, next_index, round_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (id) DO UPDATE SET
-           name=EXCLUDED.name, phone=EXCLUDED.phone, merchants=EXCLUDED.merchants,
-           created_at=EXCLUDED.created_at, next_index=EXCLUDED.next_index, round_count=EXCLUDED.round_count`,
-        [g.id, g.name || null, g.phone || null, JSON.stringify(g.merchants || []),
+           name=EXCLUDED.name, merchant_name=EXCLUDED.merchant_name, merchant_contact=EXCLUDED.merchant_contact, phone=EXCLUDED.phone,
+           merchants=EXCLUDED.merchants, created_at=EXCLUDED.created_at, next_index=EXCLUDED.next_index, round_count=EXCLUDED.round_count`,
+        [g.id, g.name || null, g.merchantName || null, g.merchantContact || null, g.phone || null, JSON.stringify(g.merchants || []),
          g.createdAt || null, g.nextIndex || 0, g.roundCount || 0]
       );
     }
@@ -405,6 +466,24 @@ function getMerchantRuntime(id, merchant) {
     });
   }
 
+  // 兼容修复：如果 security 文件已存在但缺少关键字段，用 merchant 对象补齐并持久化
+  let securityUpdated = false;
+  if (!runtime.security.merchantName && merchant.merchantName) {
+    runtime.security.merchantName = merchant.merchantName;
+    securityUpdated = true;
+  }
+  if (!runtime.security.merchantContact && merchant.merchantName) {
+    runtime.security.merchantContact = merchant.merchantName;
+    securityUpdated = true;
+  }
+  if (!runtime.security.merchantPhone && merchant.phone) {
+    runtime.security.merchantPhone = merchant.phone;
+    securityUpdated = true;
+  }
+  if (securityUpdated) {
+    saveMerchantFile(id, 'security', runtime.security);
+  }
+
   // 当面付：初始化 SDK
   initAlipaySdk(runtime, id, merchant);
 
@@ -488,11 +567,23 @@ function loadGroups() {
 }
 
 async function saveGroups(list) {
+  // 保护：空 list 写入会清空 DB（syncGroupsToDb 是 DELETE+INSERT 模式）
+  // 仅在用户明确删除最后一个组时才允许清空；其他误调用空 list 时拒绝写空，避免数据丢失
+  if ((!Array.isArray(list) || list.length === 0) && pgPool) {
+    try {
+      const { rows } = await pgPool.query('SELECT COUNT(*)::int AS c FROM merchant_groups');
+      const dbCount = rows[0].c;
+      if (dbCount > 0) {
+        // 仍允许覆盖（用户删除最后一个组的合法场景），但打日志便于排查
+        console.warn('[DB] saveGroups(空) 被调用，DB 现有', dbCount, '个组将被清空');
+      }
+    } catch (e) { /* 忽略查询失败 */ }
+  }
   fs.writeFileSync(GROUPS_FILE, JSON.stringify(list, null, 2), 'utf-8');
   if (pgPool) {
     try {
       await syncGroupsToDb(pgPool, list);
-      console.log('[DB] groups 已同步到数据库:', list.length, '个组');
+      console.log('[DB] groups 已同步到数据库:', Array.isArray(list) ? list.length : 0, '个组');
     } catch (err) {
       console.error('[DB] 同步 groups 失败:', err.message);
       // 写入本地备份，确保重启时能从文件恢复
@@ -1493,6 +1584,46 @@ app.put('/api/merchants/:id/mgr-limits', requireAuth, (req, res) => {
   res.json({ code: 'OK', data: { minAmount: merchant.mgrMinAmount, maxAmount: merchant.mgrMaxAmount } });
 });
 
+// 修改商户商品类型（同步到收银台）
+app.put('/api/merchants/:id/product-type', requireAuth, (req, res) => {
+  const list = loadMerchants();
+  const merchant = list.find(m => m.id === req.params.id);
+  if (!merchant) return res.status(404).json({ code: 'FAIL', message: '商户不存在' });
+
+  const productType = String(req.body.productType || '').trim();
+  if (!productType) return res.status(400).json({ code: 'FAIL', message: '商品类型不能为空' });
+
+  merchant.productType = productType;
+  saveMerchants(list);
+
+  // 同步到运行时
+  const rt = getMerchantRuntime(merchant.id, merchant);
+  if (rt) rt.productType = productType;
+
+  console.log(`[商户:${req.params.id}] 商品类型更新: ${productType}`);
+  res.json({ code: 'OK', data: { productType } });
+});
+
+// 修改商户收银台标题（同步到收银台）
+app.put('/api/merchants/:id/cashier-title', requireAuth, (req, res) => {
+  const list = loadMerchants();
+  const merchant = list.find(m => m.id === req.params.id);
+  if (!merchant) return res.status(404).json({ code: 'FAIL', message: '商户不存在' });
+
+  const cashierTitle = String(req.body.cashierTitle || '').trim();
+  if (!cashierTitle) return res.status(400).json({ code: 'FAIL', message: '收银台标题不能为空' });
+
+  merchant.cashierTitle = cashierTitle;
+  saveMerchants(list);
+
+  // 同步到运行时
+  const rt = getMerchantRuntime(merchant.id, merchant);
+  if (rt) rt.cashierTitle = cashierTitle;
+
+  console.log(`[商户:${req.params.id}] 收银台标题更新: ${cashierTitle}`);
+  res.json({ code: 'OK', data: { cashierTitle } });
+});
+
 // ======================== 多通道组（轮询收款）API ========================
 
 // 辅助：规范化 & 校验一个 group slot 的配置
@@ -1582,23 +1713,42 @@ app.post('/api/groups', requireAuth, (req, res) => {
   for (let i = 0; i < built.length; i++) {
     const slot = built[i];
 
-    // 从现有商户添加
+    // 从现有商户添加：克隆为独立商户实体，不修改原商户数据
     if (slot._existing) {
       const existing = merchantList.find(m => m.id === slot.existingMerchantId);
       if (!existing) {
         return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 指定的商户「${slot.existingMerchantId}」不存在` });
       }
-      if (existing.groupId) {
-        return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 「${existing.merchantName}」已在其他组中` });
-      }
-      existing.groupId = groupId;
-      existing.groupSlot = i;
-      // 更新手机号为组统一手机号
-      existing.phone = groupPhone;
-      existing.password = hashPwd('yy123456');
-      subMerchants.push(existing);
-      getMerchantRuntime(existing.id, existing);
-      console.log(`[GROUP:${groupId}] 槽位${i+1}: 复用现有商户「${existing.merchantName}」(${existing.id})`);
+      // 克隆为新商户实体（保留原商户 phone/password 不被覆盖，且允许同一商户加入多个组）
+      const cloneId = genId();
+      const cloneFname = genFileName();
+      const baseName = (existing.merchantName || groupName).replace(/\s*·槽\d+$/, '');
+      const cloned = {
+        id: cloneId,
+        type: existing.type,
+        merchantName: baseName + '·槽' + (i + 1),
+        phone: existing.phone,           // 保留原商户手机号，不替换为组手机号
+        password: existing.password,     // 保留原商户密码
+        fileName: cloneFname,
+        createdAt: now,
+        merchantUrl: '',
+        groupId: groupId,
+        groupSlot: i,
+        alipayUid: existing.alipayUid,
+        appId: existing.appId,
+        privateKey: existing.privateKey,
+        alipayPublicKey: existing.alipayPublicKey,
+        keyType: existing.keyType,
+        zipGenerated: false,
+        enabled: existing.enabled !== false,
+      };
+      // 复制管理限额
+      if (existing.mgrMinAmount !== undefined) cloned.mgrMinAmount = existing.mgrMinAmount;
+      if (existing.mgrMaxAmount !== undefined) cloned.mgrMaxAmount = existing.mgrMaxAmount;
+      merchantList.push(cloned);
+      subMerchants.push(cloned);
+      getMerchantRuntime(cloned.id, cloned);
+      console.log(`[GROUP:${groupId}] 槽位${i+1}: 克隆现有商户「${existing.merchantName}」(${existing.id}) → 新商户(${cloned.id})`);
       continue;
     }
 
@@ -1661,6 +1811,7 @@ app.post('/api/groups', requireAuth, (req, res) => {
   const group = {
     id: groupId,
     name: groupName,
+    merchantName: groupName, // 默认商户显示名称为组名，后续可在详情中独立修改
     phone: groupPhone,
     merchants: subMerchants.map(m => ({
       id: m.id, slotIndex: m.groupSlot, type: m.type,
@@ -1727,6 +1878,18 @@ app.delete('/api/groups/:id', requireAuth, (req, res) => {
   saveGroups(groups).catch(err => console.error('[DB] 删除组后同步失败:', err.message));
   groupRuntimes.delete(req.params.id);
   res.json({ code: 'OK', message: '多通道组已删除' });
+});
+
+// 更新轮巡组商户显示名称（收银台 brandName）
+app.put('/api/groups/:id/merchant-name', requireAuth, (req, res) => {
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === req.params.id);
+  if (!g) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
+  const merchantName = (req.body.merchantName || '').trim();
+  if (!merchantName) return res.json({ code: 'FAIL', message: '请输入商户名称' });
+  g.merchantName = merchantName;
+  saveGroups(groups).catch(err => console.error('[DB] 保存组商户名称失败:', err.message));
+  res.json({ code: 'OK', data: { merchantName } });
 });
 
 // 槽位启用/禁用
@@ -1905,6 +2068,32 @@ app.use('/g/:groupId', (req, res, next) => {
   next();
 });
 
+// 服务端注入组名和收银台标题到 cashier.html（避免页面加载后闪烁）
+app.use('/g/:groupId', (req, res, next) => {
+  if (req.path === '/cashier.html' || req.path === '/cashier.html/' || req.path === '/' || req.path === '/pay' || req.path === '/pay/') {
+    const firstSlot = (req.groupMerchants || []).find(s => s._merchant);
+    if (!firstSlot) return res.status(404).send('组无可用商户');
+    const m = firstSlot._merchant;
+    const groupName = req.group.name || '紫码商户';
+    const merchantName = req.group.merchantName || groupName;
+    const cashierTitle = (m && m.cashierTitle) || '紫码5.0';
+    const templateDir = (firstSlot.type === 'uid' || firstSlot.type === 'uid-simple') ? UID_TEMPLATE_DIR : TEMPLATE_DIR;
+    const filePath = path.join(templateDir, 'cashier.html');
+    try {
+      let html = fs.readFileSync(filePath, 'utf-8');
+      // 替换 <title> 标签为收银台标题
+      html = html.replace(/<title>[^<]*<\/title>/, '<title>' + cashierTitle + '</title>');
+      // 替换 brandName 元素中的默认文本为组商户显示名称
+      html = html.replace(/(<div[^>]*id="brandName"[^>]*>)[^<]*(<\/div>)/, '$1' + merchantName + '$2');
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    } catch (e) {
+      // fallback: 继续走静态文件
+    }
+  }
+  next();
+});
+
 // 静态文件（cashier.html / admin.html / logo / login / pay）按 slot[0] 的类型选模板目录
 app.use('/g/:groupId', (req, res, next) => {
   if (req.path.match(/\.(js|css|png|jpg|svg|ico|json|html)$/) || req.path === '/' || req.path === '/pay' || req.path === '/pay/') {
@@ -1966,12 +2155,14 @@ app.get('/g/:groupId/api/config', (req, res) => {
     data: {
       groupId: req.group.id,
       groupName: req.group.name,
+      merchantName: req.group.merchantName || req.group.name,
       isGroup: true,
       slotCount: (req.groupMerchants || []).length,
-      merchantName: req.group.name,
       type: m ? (m.type === 'face' ? 'face2face' : m.type) : 'face2face',
       uid: m ? (m.alipayUid || '') : '',
       enabled: true,
+      productType: m ? (m.productType || '冻结转支付') : '冻结转支付',
+      cashierTitle: m ? (m.cashierTitle || '紫码5.0') : '紫码5.0',
     }
   });
 });
@@ -2025,11 +2216,58 @@ app.post('/g/:groupId/api/login/admin', express.json(), (req, res) => {
   return res.json({ code: 'OK', token, message: '管理员直接登录' });
 });
 
+// 组级安全设置：返回组名/组手机号/第一个槽位类型，避免被代理到子商户后 sessionPhone 为空导致信息缺失
+app.get('/g/:groupId/api/security', (req, res) => {
+  const first = (req.groupMerchants || []).find(s => s._merchant);
+  const firstMerchant = first ? first._merchant : null;
+  const groupPhone = (req.group.phone || '').trim();
+  res.json({
+    code: 'OK',
+    data: {
+      hasPassword: false,
+      skipPassword: true,
+      locked: false,
+      failedAttempts: 0,
+      merchantName: req.group.merchantName || req.group.name || '',
+      merchantContact: req.group.merchantContact || req.group.merchantName || req.group.name || '',
+      merchantPhone: groupPhone,
+      type: firstMerchant ? (firstMerchant.type === 'face' ? 'face2face' : firstMerchant.type) : 'face2face',
+      alipayUid: firstMerchant ? (firstMerchant.alipayUid || '') : '',
+    },
+  });
+});
+
+// 组级：保存商户名称（admin.html 编辑 → 更新 group.merchantName，不再转发到底层商户）
+app.post('/g/:groupId/api/security/merchant-name', express.json(), (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.json({ code: 'FAIL', message: '请输入商户名称' });
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === req.group.id);
+  if (!g) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
+  g.merchantName = name;
+  saveGroups(groups).catch(err => console.error('[DB] 保存组商户名称失败(admin):', err.message));
+  res.json({ code: 'OK', merchantName: name });
+});
+
+// 组级：保存商户联系信息（admin.html 编辑 → 更新 group 级别，不再转发到底层商户）
+app.post('/g/:groupId/api/security/merchant-info', express.json(), (req, res) => {
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === req.group.id);
+  if (!g) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
+  const contact = String(req.body.merchantContact || '').trim();
+  const phone = String(req.body.merchantPhone || '').trim();
+  if (contact) g.merchantContact = contact;
+  if (phone) g.phone = phone;
+  saveGroups(groups).catch(err => console.error('[DB] 保存组联系信息失败(admin):', err.message));
+  res.json({ code: 'OK', merchantContact: contact, merchantPhone: phone });
+});
+
 // 组级 API 代理：未匹配的 /api/* 请求转发到第一个可用 slot 商户
 app.use('/g/:groupId/api', (req, res, next) => {
   // 跳过已定义的组级 API
   if (req.path === '/group-info' || req.path === '/limits' || req.path === '/config' ||
-      req.path === '/login' || req.path === '/login/check' || req.path === '/login/admin') {
+      req.path === '/login' || req.path === '/login/check' || req.path === '/login/admin' ||
+      req.path === '/security' || req.path === '/security/merchant-name' || req.path === '/security/merchant-info') {
     return next();
   }
   const first = (req.groupMerchants || []).find(s => s._merchant);
@@ -2315,10 +2553,13 @@ app.use('/m/:id', (req, res, next) => {
   if (req.path === '/cashier.html' || req.path === '/cashier.html/') {
     const m = req.merchant;
     const merchantName = m.merchantName || '紫码商户';
+    const cashierTitle = m.cashierTitle || '紫码5.0';
     const templateDir = (m.type === 'uid' || m.type === 'uid-simple') ? UID_TEMPLATE_DIR : TEMPLATE_DIR;
     const filePath = path.join(templateDir, 'cashier.html');
     try {
       let html = fs.readFileSync(filePath, 'utf-8');
+      // 替换 <title> 标签为商户收银台标题（服务端注入，避免页面加载后闪烁）
+      html = html.replace(/<title>[^<]*<\/title>/, '<title>' + cashierTitle + '</title>');
       // 替换 brandName 元素中的默认文本为实际商户名
       html = html.replace(/(<div[^>]*id="brandName"[^>]*>)[^<]*(<\/div>)/, '$1' + merchantName + '$2');
       res.set('Content-Type', 'text/html; charset=utf-8');
@@ -2946,9 +3187,9 @@ app.get('/m/:id/api/security', (req, res) => {
       skipPassword: sec.skipPassword,
       locked: locked,
       failedAttempts: sec.failedAttempts || 0,
-      merchantName: getMerchantNameForSession(req),
-      merchantContact: sec.merchantContact || '',
-      merchantPhone: phone || sec.merchantPhone || '',
+      merchantName: getMerchantNameForSession(req) || req.merchant.merchantName || '',
+      merchantContact: sec.merchantContact || req.merchant.merchantName || '',
+      merchantPhone: phone || sec.merchantPhone || req.merchant.phone || '',
       type: req.merchant.type || 'face',
       alipayUid: req.merchant.alipayUid || '',
     },
@@ -3125,6 +3366,9 @@ app.get('/m/:id/api/config', (req, res) => {
   const m = req.merchant;
   const rt = req.runtime;
   const uidMasked = m.alipayUid ? m.alipayUid.slice(0, 4) + '****' + m.alipayUid.slice(-4) : '未配置';
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.json({
     code: 'OK',
     data: {
@@ -3139,6 +3383,8 @@ app.get('/m/:id/api/config', (req, res) => {
       enabled: m.enabled !== false, // 默认 true
       mgrMinAmount: m.mgrMinAmount !== undefined ? m.mgrMinAmount : null,
       mgrMaxAmount: m.mgrMaxAmount !== undefined ? m.mgrMaxAmount : null,
+      productType: m.productType || '冻结转支付',
+      cashierTitle: m.cashierTitle || '紫码5.0',
     }
   });
 });

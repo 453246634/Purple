@@ -1547,6 +1547,13 @@ async function openGroupDetail(id) {
       <div class="detail-label">组名称</div>
       <div class="detail-value">${escapeHtml(g.name)}</div>
     </div>
+    <div class="detail-item detail-full">
+      <div class="detail-label">商户名称（收银台显示）</div>
+      <div class="detail-value" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="text" id="inputGroupMerchantName" class="form-input" value="${escapeHtml(g.merchantName || g.name || '')}" placeholder="默认与组名相同" style="flex:1;min-width:120px;font-family:inherit;">
+        <button class="btn btn-primary" id="btnSaveGroupMerchantName" onclick="saveGroupMerchantName('${g.id}')">保存</button>
+      </div>
+    </div>
     <div class="detail-item">
       <div class="detail-label">登录手机号</div>
       <div class="detail-value">${escapeHtml(g.phone || '')}</div>
@@ -1605,6 +1612,32 @@ async function openGroupDetail(id) {
   `;
   document.getElementById('groupDetailGrid').innerHTML = html;
   document.getElementById('groupDetailModal').classList.add('show');
+}
+
+async function saveGroupMerchantName(groupId) {
+  const input = document.getElementById('inputGroupMerchantName');
+  const btn = document.getElementById('btnSaveGroupMerchantName');
+  const merchantName = input.value.trim();
+  if (!merchantName) return showToast('请输入商户名称', 'error');
+  btn.disabled = true; btn.textContent = '保存中...';
+  try {
+    const res = await fetch(`/api/groups/${groupId}/merchant-name`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ merchantName })
+    });
+    const json = await res.json();
+    if (json.code !== 'OK') throw new Error(json.message || '保存失败');
+    // 刷新本地 groups 缓存
+    const g = groups.find(x => x.id === groupId);
+    if (g) g.merchantName = merchantName;
+    renderMerchantList();
+    showToast('商户名称已保存', 'success');
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '保存';
+  }
 }
 
 function closeGroupDetailModal() {
@@ -2229,6 +2262,66 @@ async function saveMgrLimits() {
   }
 }
 
+// ===== 保存商品类型 =====
+async function saveProductType() {
+  if (!detailMerchantId) return;
+  const val = document.getElementById('productTypeInput').value.trim();
+  if (!val) { showToast('商品类型不能为空', 'error'); return; }
+
+  const btn = document.getElementById('productTypeSaveBtn');
+  btn.disabled = true; btn.textContent = '保存中...';
+
+  try {
+    const res = await fetch(`/api/merchants/${detailMerchantId}/product-type`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ productType: val })
+    });
+    const json = await res.json();
+    if (json.code === 'OK') {
+      const m = merchants.find(x => x.id === detailMerchantId);
+      if (m) { m.productType = json.data.productType; }
+      showToast('商品类型已保存', 'success');
+    } else {
+      showToast(json.message || '保存失败', 'error');
+    }
+  } catch (e) {
+    showToast('网络错误', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '保存';
+  }
+}
+
+// ===== 保存收银台标题 =====
+async function saveCashierTitle() {
+  if (!detailMerchantId) return;
+  const val = document.getElementById('cashierTitleInput').value.trim();
+  if (!val) { showToast('收银台标题不能为空', 'error'); return; }
+
+  const btn = document.getElementById('cashierTitleSaveBtn');
+  btn.disabled = true; btn.textContent = '保存中...';
+
+  try {
+    const res = await fetch(`/api/merchants/${detailMerchantId}/cashier-title`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ cashierTitle: val })
+    });
+    const json = await res.json();
+    if (json.code === 'OK') {
+      const m = merchants.find(x => x.id === detailMerchantId);
+      if (m) { m.cashierTitle = json.data.cashierTitle; }
+      showToast('收银台标题已保存', 'success');
+    } else {
+      showToast(json.message || '保存失败', 'error');
+    }
+  } catch (e) {
+    showToast('网络错误', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '保存';
+  }
+}
+
 // ===== 详情 =====
 async function openMerchantDetail(id) {
   detailMerchantId = id;
@@ -2293,6 +2386,44 @@ async function openMerchantDetail(id) {
       `;
     }
     grid.innerHTML = html;
+
+    // 商品类型设置区域
+    const productTypeHtml = `
+      <div class="mgr-limits-section detail-full">
+        <div class="mgr-limits-title">📦 商品类型设置（同步到收银台）</div>
+        <div class="mgr-limits-row">
+          <div class="mgr-limit-field" style="flex:1;">
+            <label>商品类型名称</label>
+            <input type="text" id="productTypeInput" placeholder="如：冻结转支付" style="font-family:inherit;"
+              value="${escapeHtml(d.productType || '冻结转支付')}">
+          </div>
+          <button class="mgr-limit-save-btn" id="productTypeSaveBtn" onclick="saveProductType()">保存</button>
+        </div>
+        <div class="mgr-limit-hint">
+          修改后保存，收银台支付时的商品类型会同步更新。默认为「冻结转支付」。
+        </div>
+      </div>
+    `;
+    grid.innerHTML += productTypeHtml;
+
+    // 收银台标题设置区域
+    const cashierTitleHtml = `
+      <div class="mgr-limits-section detail-full">
+        <div class="mgr-limits-title">🏷️ 收银台标题设置（同步到收银台）</div>
+        <div class="mgr-limits-row">
+          <div class="mgr-limit-field" style="flex:1;">
+            <label>收银台标题名称</label>
+            <input type="text" id="cashierTitleInput" placeholder="如：紫码5.0" style="font-family:inherit;"
+              value="${escapeHtml(d.cashierTitle || '紫码5.0')}">
+          </div>
+          <button class="mgr-limit-save-btn" id="cashierTitleSaveBtn" onclick="saveCashierTitle()">保存</button>
+        </div>
+        <div class="mgr-limit-hint">
+          修改后保存，收银台左上角的标题会同步更新。默认为「紫码5.0」。
+        </div>
+      </div>
+    `;
+    grid.innerHTML += cashierTitleHtml;
 
     // 限额设置区域
     const limitsHtml = `
