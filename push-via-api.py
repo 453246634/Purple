@@ -2,26 +2,21 @@
 """Purple 项目 API 推送 - 通过 GitHub REST API 推送代码"""
 import json, os, sys, base64, urllib.request, urllib.error, ssl, subprocess
 
-OWNER = "453246634"
+OWNER = "hgp61"
 REPO = "Purple"
 BRANCH = "main"
 WORKDIR = os.path.dirname(os.path.abspath(__file__))
 API = f"https://api.github.com/repos/{OWNER}/{REPO}"
 
-# Token from env var, local .token_453 file, or fallback .token file
+# Token from env var or local .token file (hgp61 token)
 TOKEN = os.environ.get("GITHUB_TOKEN")
 if not TOKEN:
-    token_file = os.path.join(WORKDIR, ".token_453")
+    token_file = os.path.join(WORKDIR, ".token")
     if os.path.exists(token_file):
         with open(token_file) as f:
             TOKEN = f.read().strip()
 if not TOKEN:
-    token_file2 = os.path.join(WORKDIR, ".token")
-    if os.path.exists(token_file2):
-        with open(token_file2) as f:
-            TOKEN = f.read().strip()
-if not TOKEN:
-    print("Error: Set GITHUB_TOKEN env var or create .token_453 / .token file", flush=True)
+    print("Error: Set GITHUB_TOKEN env var or create .token file", flush=True)
     sys.exit(1)
 
 ctx = ssl.create_default_context()

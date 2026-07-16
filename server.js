@@ -74,6 +74,11 @@ async function createTables(pool) {
       created_at TIMESTAMP
     );`);
 
+  // 兼容旧表：如果旧表缺少 group_id/group_slot 列，则 ALTER TABLE 添加
+  try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS group_id VARCHAR(32)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS group_slot INTEGER'); } catch (e) {}
+
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS admin_config (
       id INTEGER PRIMARY KEY,
