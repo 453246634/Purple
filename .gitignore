@@ -3,3 +3,5 @@ node-runtime/
 data/
 *.log
 .DS_Store
+.token
+.token_453

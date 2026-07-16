@@ -100,6 +100,9 @@ const CONFIG = {
   // 商户名称（用于后台默认显示）
   merchantName: 'UID测试',
 
+  // 联系人姓名（默认使用商户名称）
+  merchantContact: '',
+
   // 商户登录手机号（由商户管理系统注入，用于后台登录验证）
   merchantPhone: '',
 

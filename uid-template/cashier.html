@@ -829,6 +829,9 @@
 const API_BASE = '';
 let IS_SIMPLE = false; // 是否为 UID 简易支付模式（页面加载后通过 api/config 获取）
 let MERCHANT_UID = ''; // 商户支付宝 UID（从 api/config 获取）
+let IS_GROUP = false;   // 是否为多通道组收银台
+let GROUP_ID = '';      // 多通道组 ID
+let isAlipayBrowser = /alipayclient|alipaydefined|aliapp/i.test(navigator.userAgent);  // 是否在支付宝浏览器内
 
 // ==================== 状态 ====================
 let currentOutTradeNo = '';
@@ -836,11 +839,13 @@ let pollingTimer = null;
 let lastAmount = '';
 let lastSubject = '';
 let lastQrImage = '';
-const CATEGORY_LIST = ['冻结转支付','百货家居','服装批发','五金器械','软件定制服务'];
+const CATEGORY_LIST = ['冻结转支付'];
 let currentCategoryIndex = 0;
 let currentCategory = CATEGORY_LIST[0];
 let limitConfig = {};  // 从 /api/limits 拉取的限额配置
 let mgrConfig = { enabled: true, mgrMinAmount: null, mgrMaxAmount: null };  // 从 /api/config 拉取的管理系统配置
+let paymentConfirmed = false;  // 支付是否已确认成功
+let waitingAlipayReturn = false; // 是否等待从支付宝转账页返回
 
 // 根据类型设置按钮文字
 function setPayButtonText() {
@@ -855,6 +860,39 @@ function setPayButtonText() {
   } else {
     btn.textContent = '生成收款码';
     hint.textContent = '点击生成支付宝收款二维码，用户扫码支付';
+  }
+}
+
+// 判断是否在支付宝 WebView 中（URL 带 webview=1）
+function isInAlipayWebview() {
+  return new URLSearchParams(window.location.search).get('webview') === '1';
+}
+
+// 关闭支付宝 WebView 并返回支付宝首页（用户支付完成后使用）
+var _closeLocked = false;
+function closeAlipayWebView() {
+  if (_closeLocked) return;
+  _closeLocked = true;
+
+  // 方法1：支付宝官方关闭 API（优先尝试）
+  if (window.AlipayJSBridge && AlipayJSBridge.call) {
+    try { AlipayJSBridge.call('closeWebView'); } catch (e) {}
+  }
+
+  // 兜底：800ms 后强制跳转支付宝首页
+  // 不检查 document.hidden（closeWebView 可能短暂触发 hidden 导致兜底被跳过）
+  setTimeout(function() {
+    _closeLocked = false;
+    window.location.href = 'alipays://platformapi/startapp?appId=20000067';
+  }, 800);
+}
+
+// 关闭收银台：支付宝环境关闭 WebView 返回首页，其他环境重置到输入页
+function closeOrReset() {
+  if (isAlipayBrowser || isInAlipayWebview()) {
+    closeAlipayWebView();
+  } else {
+    resetToInput();
   }
 }
 
@@ -925,7 +963,9 @@ async function createQRCode() {
   }
 
   // ===== UID 简易支付：直接跳 /pay 页面，让服务端 handleAlipayRedirect 处理跳转 =====
-  if (IS_SIMPLE && MERCHANT_UID) {
+  if (!IS_GROUP && IS_SIMPLE && MERCHANT_UID) {
+    paymentConfirmed = false;
+    waitingAlipayReturn = true;
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
       method: 'POST',
@@ -955,7 +995,9 @@ async function createQRCode() {
   }
 
   // ===== UID固码：在支付宝webview内直接发起转账（用户已在支付宝内，不需要再生成二维码扫）=====
-  if (isInAlipayWebview && window.AlipayJSBridge && MERCHANT_UID) {
+  if (!IS_GROUP && isInAlipayWebview && window.AlipayJSBridge && MERCHANT_UID) {
+    paymentConfirmed = false;
+    waitingAlipayReturn = true;
     // 先异步创建订单（后台记录，不阻塞跳转）
     fetch(`${API_BASE}cashier/qrcode`, {
       method: 'POST',
@@ -998,9 +1040,61 @@ async function createQRCode() {
     if (data.code === 'OK') {
       currentOutTradeNo = data.out_trade_no;
       lastQrImage = data.qr_image || '';
-      showQRCode(data);
-      startPolling();
-      rotateCategory();
+      lastAmount = amount;
+      lastSubject = subject;
+
+      // ===== 多通道组 UID 支付：服务端返回选中商户的 alipays_url，直接跳转 =====
+      if (IS_GROUP && data.alipays_url) {
+        paymentConfirmed = false;
+        waitingAlipayReturn = true;
+        // 隐藏输入区，显示支付状态
+        hideSecureKeyboard();
+        document.getElementById('inputSection').style.display = 'none';
+        var paySec = document.getElementById('paySection');
+        if (paySec) paySec.classList.add('show');
+        document.querySelector('.merchant-header').classList.add('compact');
+        document.getElementById('payTitle').textContent = '若已支付完成';
+        document.getElementById('paySubtitle').textContent = '请通知收款方确认是否到账';
+        document.getElementById('payAmount').textContent = '¥' + parseFloat(data.amount).toFixed(2);
+        document.getElementById('paySubject').textContent = data.subject;
+        document.getElementById('payTip').innerHTML = '';
+        document.getElementById('payTip').className = 'qr-tip';
+        document.querySelector('#paySection .btn-group').innerHTML = `
+          <button class="cancel-btn" onclick="resetToInput()">继续支付</button>
+          <button class="cancel-btn" onclick="closeAlipayWebView()">关闭</button>
+        `;
+        // 隐藏二维码区域
+        var qrBox = document.querySelector('#paySection .qr-box');
+        if (qrBox) qrBox.style.display = 'none';
+
+        if (window.AlipayJSBridge) {
+          // 支付宝环境：优先用 pushWindow / startApp 唤起转账，避免 location.href 被拦截或停留当前页
+          try {
+            AlipayJSBridge.call('pushWindow', { url: data.alipays_url });
+          } catch (e) {
+            try {
+              var biz = JSON.stringify({ s: 'money', u: data.uid, a: parseFloat(amount).toFixed(2), m: subject });
+              AlipayJSBridge.call('startApp', { appId: '20000123', param: { actionType: 'scan', biz_data: biz } });
+            } catch (e2) {
+              window.location.href = data.alipays_url;
+            }
+          }
+        } else if (isAlipayBrowser) {
+          // 支付宝浏览器兜底：直接跳转 alipays:// 链接
+          window.location.href = data.alipays_url;
+        } else {
+          // 非支付宝环境：兜底显示二维码
+          if (qrBox) qrBox.style.display = '';
+          showQRCode(data);
+        }
+        startPolling();
+        rotateCategory();
+      } else {
+        // 非组支付或非 UID：正常显示二维码
+        showQRCode(data);
+        startPolling();
+        rotateCategory();
+      }
     } else if (data.code === 'ALIPAY_ERROR') {
       showAlipayError(data.alipay_code, data.alipay_sub_code, data.alipay_sub_msg, data.alipay_msg);
       if (keyboardPayBtn) keyboardPayBtn.classList.remove('key-disabled');
@@ -1096,6 +1190,14 @@ function startPolling() {
 
 // ==================== 支付成功 ====================
 function showSuccess(data) {
+  paymentConfirmed = true;
+
+  // 在支付宝 WebView 中，不直接关闭，而是显示确认到账提示页，让用户手动关闭返回支付宝首页
+  if (isAlipayBrowser || isInAlipayWebview()) {
+    showPaidConfirmPage();
+    return;
+  }
+
   document.getElementById('paySection').classList.remove('show');
   document.getElementById('successSection').classList.add('show');
   document.querySelector('.merchant-header').classList.remove('compact');
@@ -1107,11 +1209,54 @@ function showSuccess(data) {
   }
 }
 
+// ==================== 显示支付完成确认页（支付宝环境：让用户手动关闭 WebView） ====================
+function showPaidConfirmPage() {
+  var paySec = document.getElementById('paySection');
+  if (paySec) paySec.classList.add('show');
+
+  // 隐藏成功页（非支付宝环境可能已显示）
+  var successSec = document.getElementById('successSection');
+  if (successSec) successSec.classList.remove('show');
+
+  var payTitle = document.getElementById('payTitle');
+  if (payTitle) payTitle.textContent = '若已支付完成';
+
+  var paySubtitle = document.getElementById('paySubtitle');
+  if (paySubtitle) paySubtitle.textContent = '若支付成功，请通知收款方确认是否到账';
+
+  var payStatusMsg = document.getElementById('payStatusMsg');
+  if (payStatusMsg) payStatusMsg.textContent = '支付已完成';
+
+  // 显示白色成功占位区域（替代原二维码/spinner灰底区域）
+  var qrBox = document.querySelector('#paySection .qr-box');
+  if (qrBox) {
+    qrBox.style.display = '';
+    qrBox.style.background = '#fff';
+    qrBox.style.border = '1px solid #f0f0f0';
+    qrBox.innerHTML = '<div style="padding:32px 20px;text-align:center;"><div style="font-size:48px;color:#52c41a;margin-bottom:12px;">✓</div><div style="font-size:14px;color:#1f1f1f;margin-bottom:8px;">支付已完成</div><div style="font-size:13px;color:#999;">可选择继续支付，关闭请点左上角返回</div></div>';
+  }
+
+  var payTip = document.getElementById('payTip');
+  if (payTip) {
+    payTip.innerHTML = '<span class="dot"></span> 如需再次收款，请点击继续支付';
+    payTip.className = 'qr-tip paid';
+  }
+
+  var btnGroup = document.querySelector('#paySection .btn-group');
+  if (btnGroup) {
+    btnGroup.innerHTML = `
+      <button class="cancel-btn" onclick="resetToInput()">继续支付</button>
+    `;
+  }
+}
+
 // ==================== 重置到输入状态 ====================
 function resetToInput() {
   if (pollingTimer) clearInterval(pollingTimer);
   currentOutTradeNo = '';
   lastQrImage = '';
+  paymentConfirmed = false;
+  waitingAlipayReturn = false;
 
   document.getElementById('paySection').classList.remove('show');
   document.getElementById('successSection').classList.remove('show');
@@ -1255,8 +1400,18 @@ async function fetchMgrConfig() {
         }
       }
       // 同步商户类型（uid-simple / uid）
-      if (data.data.type) { IS_SIMPLE = data.data.type === 'uid-simple'; }
-      if (data.data.uid) { MERCHANT_UID = data.data.uid; }
+      if (data.data.isGroup) {
+        IS_GROUP = true;
+        GROUP_ID = data.data.groupId || '';
+        // 组页面的 IS_SIMPLE / MERCHANT_UID 不预先设置，每次支付等服务端返回选中商户的信息
+        IS_SIMPLE = false;
+        MERCHANT_UID = '';
+      } else {
+        IS_GROUP = false;
+        GROUP_ID = '';
+        if (data.data.type) { IS_SIMPLE = data.data.type === 'uid-simple'; }
+        if (data.data.uid) { MERCHANT_UID = data.data.uid; }
+      }
     } else {
       // 响应格式异常，回退到默认值
       var brandName2 = document.getElementById('brandName');
@@ -1395,6 +1550,26 @@ function updateAmountInputWidth() {
 document.querySelector('.amount-input-wrap').addEventListener('click', function(e) {
   showSecureKeyboard();
   updateAmountInputWidth();
+});
+
+// 监听从支付宝转账页返回：若已支付成功，显示确认到账提示页，由用户手动关闭 WebView
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState !== 'visible') return;
+  if (paymentConfirmed) {
+    showPaidConfirmPage();
+    return;
+  }
+  if (waitingAlipayReturn && currentOutTradeNo) {
+    fetch(`${API_BASE}cashier/check?out_trade_no=${currentOutTradeNo}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'paid') {
+          paymentConfirmed = true;
+          showPaidConfirmPage();
+        }
+      })
+      .catch(() => {});
+  }
 });
 
 // 脚本最后一行：直接调用 fetchMgrConfig，确保品牌名初始化

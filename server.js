@@ -69,6 +69,8 @@ async function createTables(pool) {
       mgr_min_amount NUMERIC,
       mgr_max_amount NUMERIC,
       zip_generated BOOLEAN DEFAULT false,
+      group_id VARCHAR(32),
+      group_slot INTEGER,
       created_at TIMESTAMP
     );`);
 
@@ -79,9 +81,20 @@ async function createTables(pool) {
     );`);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS merchant_groups (
+      id VARCHAR(32) PRIMARY KEY,
+      name VARCHAR(128),
+      phone VARCHAR(16),
+      merchants JSONB NOT NULL,
+      created_at TIMESTAMP,
+      next_index INTEGER DEFAULT 0,
+      round_count INTEGER DEFAULT 0
+    );`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS merchant_json_data (
       merchant_id VARCHAR(32) NOT NULL,
-      data_name VARCHAR(32) NOT NULL,
+      data_name VARCHAR(64) NOT NULL,
       data_json JSONB NOT NULL,
       PRIMARY KEY (merchant_id, data_name)
     );`);
@@ -108,10 +121,19 @@ async function restoreFromDb(pool) {
       mgrMinAmount: r.mgr_min_amount,
       mgrMaxAmount: r.mgr_max_amount,
       zipGenerated: r.zip_generated,
+      groupId: r.group_id,
+      groupSlot: r.group_slot,
       createdAt: r.created_at
     }));
     fs.writeFileSync(MERCHANTS_FILE, JSON.stringify(merchants, null, 2), 'utf-8');
     console.log('[DB] 已恢复', merchants.length, '个商户');
+  } else {
+    // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
+    const localMerchants = loadMerchants();
+    if (localMerchants.length > 0) {
+      console.log('[DB] 数据库无商户，从本地文件同步到数据库...');
+      syncMerchantsToDb(pool, localMerchants).catch(err => console.error('[DB] 反向同步 merchants 失败:', err.message));
+    }
   }
 
   // Restore admin config
@@ -130,6 +152,27 @@ async function restoreFromDb(pool) {
   if (dataRows.length > 0) {
     console.log('[DB] 已恢复', dataRows.length, '条商户数据');
   }
+
+  // Restore merchant groups
+  const { rows: groupRows } = await pool.query('SELECT * FROM merchant_groups');
+  const localGroups = loadGroups(); // 读取本地文件
+  if (groupRows.length > 0) {
+    const groups = groupRows.map(r => ({
+      id: r.id,
+      name: r.name,
+      phone: r.phone,
+      merchants: r.merchants,
+      createdAt: r.created_at,
+      nextIndex: r.next_index || 0,
+      roundCount: r.round_count || 0,
+    }));
+    fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf-8');
+    console.log('[DB] 已恢复', groups.length, '个多通道组');
+  } else if (localGroups.length > 0) {
+    // DB 为空但本地有数据 → 反向同步：将本地数据写入 DB
+    console.log('[DB] 数据库无多通道组，从本地文件同步到数据库...');
+    syncGroupsToDb(pool, localGroups).catch(err => console.error('[DB] 反向同步 groups 失败:', err.message));
+  }
 }
 
 async function syncMerchantsToDb(pool, list) {
@@ -139,20 +182,21 @@ async function syncMerchantsToDb(pool, list) {
     await client.query('DELETE FROM merchants');
     for (const m of list) {
       await client.query(
-        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, group_id, group_slot, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
          ON CONFLICT (id) DO UPDATE SET
            type=EXCLUDED.type, merchant_name=EXCLUDED.merchant_name, phone=EXCLUDED.phone,
            password=EXCLUDED.password, alipay_uid=EXCLUDED.alipay_uid, file_name=EXCLUDED.file_name,
            app_id=EXCLUDED.app_id, private_key=EXCLUDED.private_key, alipay_public_key=EXCLUDED.alipay_public_key,
            key_type=EXCLUDED.key_type, merchant_url=EXCLUDED.merchant_url, enabled=EXCLUDED.enabled,
            mgr_min_amount=EXCLUDED.mgr_min_amount, mgr_max_amount=EXCLUDED.mgr_max_amount,
-           zip_generated=EXCLUDED.zip_generated, created_at=EXCLUDED.created_at`,
+           zip_generated=EXCLUDED.zip_generated, group_id=EXCLUDED.group_id, group_slot=EXCLUDED.group_slot, created_at=EXCLUDED.created_at`,
         [m.id, m.type, m.merchantName || null, m.phone || null, m.password || null,
          m.alipayUid || null, m.fileName || null, m.appId || null, m.privateKey || null,
          m.alipayPublicKey || null, m.keyType || null, m.merchantUrl || null,
          m.enabled !== false, m.mgrMinAmount || null, m.mgrMaxAmount || null,
-         m.zipGenerated || false, m.createdAt || null]
+         m.zipGenerated || false, m.groupId || null, m.groupSlot !== undefined ? m.groupSlot : null,
+         m.createdAt || null]
       );
     }
     await client.query('COMMIT');
@@ -178,6 +222,31 @@ async function syncMerchantDataToDb(pool, merchantId, name, data) {
      ON CONFLICT (merchant_id, data_name) DO UPDATE SET data_json = EXCLUDED.data_json`,
     [merchantId, name, JSON.stringify(data)]
   );
+}
+
+async function syncGroupsToDb(pool, list) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM merchant_groups');
+    for (const g of list) {
+      await client.query(
+        `INSERT INTO merchant_groups (id, name, phone, merchants, created_at, next_index, round_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET
+           name=EXCLUDED.name, phone=EXCLUDED.phone, merchants=EXCLUDED.merchants,
+           created_at=EXCLUDED.created_at, next_index=EXCLUDED.next_index, round_count=EXCLUDED.round_count`,
+        [g.id, g.name || null, g.phone || null, JSON.stringify(g.merchants || []),
+         g.createdAt || null, g.nextIndex || 0, g.roundCount || 0]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function initDb() {
@@ -413,8 +482,18 @@ function loadGroups() {
   catch { return []; }
 }
 
-function saveGroups(list) {
+async function saveGroups(list) {
   fs.writeFileSync(GROUPS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  if (pgPool) {
+    try {
+      await syncGroupsToDb(pgPool, list);
+      console.log('[DB] groups 已同步到数据库:', list.length, '个组');
+    } catch (err) {
+      console.error('[DB] 同步 groups 失败:', err.message);
+      // 写入本地备份，确保重启时能从文件恢复
+      fs.writeFileSync(GROUPS_FILE + '.bak', JSON.stringify(list, null, 2), 'utf-8');
+    }
+  }
 }
 
 function genGroupId() {
@@ -424,13 +503,24 @@ function genGroupId() {
 function getGroupRuntime(group) {
   if (groupRuntimes.has(group.id)) return groupRuntimes.get(group.id);
   const runtime = {
-    nextIndex: 0,        // 下一笔订单应当落到的槽位
-    roundCount: 0,       // 已轮转过的笔数（用于展示）
-    orders: [],          // 该 group 下所有订单（冗余存储）
+    nextIndex: group.nextIndex || 0,        // 下一笔订单应当落到的槽位
+    roundCount: group.roundCount || 0,      // 已轮转过的笔数（用于展示）
+    orders: [],                             // 该 group 下所有订单（冗余存储）
     merchantIds: (group.merchants || []).map(m => m.id),
   };
   groupRuntimes.set(group.id, runtime);
   return runtime;
+}
+
+function persistGroupRuntime(groupId) {
+  const rt = groupRuntimes.get(groupId);
+  if (!rt) return;
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === groupId);
+  if (!g) return;
+  g.nextIndex = rt.nextIndex;
+  g.roundCount = rt.roundCount;
+  saveGroups(groups).catch(err => console.error('[DB] 持久化轮巡计数失败:', err.message));
 }
 
 function pickNextGroupMerchant(group) {
@@ -443,6 +533,7 @@ function pickNextGroupMerchant(group) {
     if (m && m.enabled !== false) {
       rt.nextIndex = (idx + 1) % N;
       rt.roundCount += 1;
+      persistGroupRuntime(group.id);
       return { merchant: m, slotIndex: idx };
     }
   }
@@ -992,6 +1083,9 @@ function injectUidConfig(templateIndexJs, config) {
   if (config.merchantName) {
     result = result.replace(/merchantName:\s*['"].*?['"],/, `merchantName: '${config.merchantName}',`);
   }
+  if (config.merchantContact) {
+    result = result.replace(/merchantContact:\s*['"].*?['"],/, `merchantContact: '${config.merchantContact}',`);
+  }
   if (config.merchantPhone) {
     result = result.replace(/merchantPhone:\s*['"].*?['"],/, `merchantPhone: '${config.merchantPhone}',`);
   }
@@ -1072,12 +1166,20 @@ app.post('/api/admin/change-password', requireAuth, (req, res) => {
 });
 
 app.get('/api/merchants', requireAuth, (req, res) => {
-  const list = loadMerchants().filter(m => !m.groupId).map(m => ({ ...m, password: undefined }));
+  const list = loadMerchants().map(m => ({ ...m, password: undefined }));
+  // 为组内商户附加组名
+  const groups = loadGroups();
+  for (const m of list) {
+    if (m.groupId) {
+      const g = groups.find(x => x.id === m.groupId);
+      if (g) m.groupName = g.name;
+    }
+  }
   res.json({ code: 'OK', data: list });
 });
 
 app.get('/api/stats', requireAuth, (req, res) => {
-  const list = loadMerchants().filter(m => !m.groupId);
+  const list = loadMerchants();
   const today = new Date().toDateString();
   const todayCount = list.filter(m => new Date(m.createdAt).toDateString() === today).length;
   res.json({ code: 'OK', data: { total: list.length, today: todayCount } });
@@ -1214,6 +1316,7 @@ app.post('/api/merchants/uid', requireAuth, (req, res) => {
     const zipBuffer = generateUidMerchantZip({
       alipayUid: uid,
       merchantName: merchantName || '',
+      merchantContact: merchantName || '',
       merchantPhone: phone.trim(),
       merchantPassword: defaultPassword,
       type: merchantType,
@@ -1267,7 +1370,7 @@ app.delete('/api/merchants/:id', requireAuth, (req, res) => {
     const g = groups.find(x => x.id === merchant.groupId);
     if (g) {
       g.merchants = (g.merchants || []).filter(s => s.id !== merchant.id);
-      saveGroups(groups);
+      saveGroups(groups).catch(err => console.error('[DB] 同步 groups 失败:', err.message));
       syncGroupRuntimeAfterMerchantChange(merchant.groupId);
       console.log(`[GROUP:${merchant.groupId}] 槽位 ${merchant.id} 已从组中移除（商户被单独删除），剩余 ${g.merchants.length} 个`);
     }
@@ -1359,7 +1462,7 @@ app.put('/api/merchants/:id/toggle', requireAuth, (req, res) => {
     const g = groups.find(x => x.id === merchant.groupId);
     if (g) {
       const slot = (g.merchants || []).find(s => s.id === merchant.id);
-      if (slot) { slot.enabled = merchant.enabled; saveGroups(groups); }
+      if (slot) { slot.enabled = merchant.enabled; saveGroups(groups).catch(err => console.error('[DB] 同步 groups 失败:', err.message)); }
     }
   }
 
@@ -1446,83 +1549,95 @@ app.post('/api/groups', requireAuth, (req, res) => {
   if (!/^1\d{10}$/.test(groupPhone)) return res.json({ code: 'FAIL', message: '请输入有效的 11 位登录手机号' });
   if (slots.length < 2) return res.json({ code: 'FAIL', message: '多通道进件至少需要 2 个商户' });
 
-  // 校验 + 规范化（仅对新增商户做 buildGroupSlot；已有商户直接引用）
+  // 校验 + 规范化（existingMerchantId 的 slot 不经过 buildGroupSlot）
+  const built = [];
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    if (slot.existingMerchantId) {
+      // 从现有商户添加：只需要 existingMerchantId，无需其他字段
+      const existingId = (slot.existingMerchantId || '').trim();
+      if (!existingId) {
+        return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 未指定商户ID` });
+      }
+      built.push({ _existing: true, existingMerchantId: existingId, index: i });
+    } else {
+      try {
+        built.push(buildGroupSlot(slot, groupPhone));
+      } catch (e) {
+        return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: ${e.message}` });
+      }
+    }
+  }
+
+  // 写入底层 merchants.json（每个 slot 作为一个独立 merchant 实体）
   const merchantList = loadMerchants();
   const groupId = genGroupId();
   const now = new Date().toISOString();
   const subMerchants = [];
+  for (let i = 0; i < built.length; i++) {
+    const slot = built[i];
 
-  for (let i = 0; i < slots.length; i++) {
-    const slot = slots[i];
-
-    // —— 模式：选择已有商户 ——
-    if (slot.mode === 'existing' && slot.existingMerchantId) {
-      const existingIdx = merchantList.findIndex(m => m.id === slot.existingMerchantId);
-      if (existingIdx === -1) return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 选择的商户不存在` });
-      const merchant = merchantList[existingIdx];
-      if (merchant.groupId) return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 该商户已在其他通道组中` });
-
-      // 标记商户归属到当前组
-      merchant.groupId = groupId;
-      merchant.groupSlot = i;
-      merchant.enabled = true;
-      if (!merchant.phone) merchant.phone = groupPhone;
-      if (!merchant.password) merchant.password = hashPwd('yy123456');
-      merchant._fromExisting = true;  // 标记为已有商户引用，删除组时不清除
-
-      subMerchants.push(merchant);
-      getMerchantRuntime(merchant.id, merchant);
+    // 从现有商户添加
+    if (slot._existing) {
+      const existing = merchantList.find(m => m.id === slot.existingMerchantId);
+      if (!existing) {
+        return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 指定的商户「${slot.existingMerchantId}」不存在` });
+      }
+      if (existing.groupId) {
+        return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: 「${existing.merchantName}」已在其他组中` });
+      }
+      existing.groupId = groupId;
+      existing.groupSlot = i;
+      // 更新手机号为组统一手机号
+      existing.phone = groupPhone;
+      existing.password = hashPwd('yy123456');
+      subMerchants.push(existing);
+      getMerchantRuntime(existing.id, existing);
+      console.log(`[GROUP:${groupId}] 槽位${i+1}: 复用现有商户「${existing.merchantName}」(${existing.id})`);
       continue;
-    }
-
-    // —— 模式：新增商户（原有逻辑） ——
-    let built;
-    try {
-      built = buildGroupSlot(slot, groupPhone);
-    } catch (e) {
-      return res.json({ code: 'FAIL', message: `第 ${i + 1} 个商户: ${e.message}` });
     }
 
     const mid = genId();
     const fname = genFileName();
     const merchant = {
       id: mid,
-      type: built.type,
-      merchantName: built.merchantName + '·槽' + (i + 1),
-      phone: built.phone,
-      password: built.password,
+      type: slot.type,
+      merchantName: slot.merchantName + '·槽' + (i + 1),
+      phone: slot.phone,
+      password: slot.password,
       fileName: fname,
       createdAt: now,
       merchantUrl: '',
       groupId: groupId,
       groupSlot: i,
     };
-    if (built.alipayUid) merchant.alipayUid = built.alipayUid;
-    if (built.appId) {
-      merchant.appId = built.appId;
-      merchant.privateKey = built.privateKey;
-      merchant.alipayPublicKey = built.alipayPublicKey;
-      merchant.keyType = built.keyType;
+    if (slot.alipayUid) merchant.alipayUid = slot.alipayUid;
+    if (slot.appId) {
+      merchant.appId = slot.appId;
+      merchant.privateKey = slot.privateKey;
+      merchant.alipayPublicKey = slot.alipayPublicKey;
+      merchant.keyType = slot.keyType;
     }
     // 尝试生成 ZIP（不影响创建）
     try {
       let zipBuf;
-      if (built.type === 'uid' || built.type === 'uid-simple') {
+      if (slot.type === 'uid' || slot.type === 'uid-simple') {
         zipBuf = generateUidMerchantZip({
-          alipayUid: built.alipayUid, merchantName: built.merchantName,
-          merchantPhone: built.phone, merchantPassword: 'yy123456', type: built.type,
+          alipayUid: slot.alipayUid, merchantName: slot.merchantName,
+          merchantContact: slot.merchantName,
+          merchantPhone: slot.phone, merchantPassword: 'yy123456', type: slot.type,
         });
-      } else if (built.type === 'face2face-dynamic') {
+      } else if (slot.type === 'face2face-dynamic') {
         zipBuf = generateFaceDynamicMerchantZip({
-          appId: built.appId, privateKey: built.privateKey, alipayPublicKey: built.alipayPublicKey,
-          keyType: built.keyType, merchantName: built.merchantName,
-          merchantPhone: built.phone, merchantPassword: 'yy123456', merchantType: built.type,
+          appId: slot.appId, privateKey: slot.privateKey, alipayPublicKey: slot.alipayPublicKey,
+          keyType: slot.keyType, merchantName: slot.merchantName,
+          merchantPhone: slot.phone, merchantPassword: 'yy123456', merchantType: slot.type,
         });
       } else {
         zipBuf = generateMerchantZip({
-          appId: built.appId, privateKey: built.privateKey, alipayPublicKey: built.alipayPublicKey,
-          keyType: built.keyType, merchantName: built.merchantName,
-          merchantPhone: built.phone, merchantPassword: 'yy123456', merchantType: built.type,
+          appId: slot.appId, privateKey: slot.privateKey, alipayPublicKey: slot.alipayPublicKey,
+          keyType: slot.keyType, merchantName: slot.merchantName,
+          merchantPhone: slot.phone, merchantPassword: 'yy123456', merchantType: slot.type,
         });
       }
       fs.writeFileSync(path.join(DATA_DIR, `${fname}.zip`), zipBuf);
@@ -1551,7 +1666,7 @@ app.post('/api/groups', requireAuth, (req, res) => {
   };
   const groups = loadGroups();
   groups.push(group);
-  saveGroups(groups);
+  saveGroups(groups).catch(err => console.error('[DB] 保存多通道组失败:', err.message));
   getGroupRuntime(group);
 
   console.log(`[GROUP:${groupId}] 创建多通道组「${groupName}」含 ${subMerchants.length} 个商户`);
@@ -1589,7 +1704,7 @@ app.delete('/api/groups/:id', requireAuth, (req, res) => {
   const groups = loadGroups();
   const idx = groups.findIndex(g => g.id === req.params.id);
   if (idx === -1) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
-  // 解绑/删除底层商户
+  // 级联删除底层商户
   const group = groups[idx];
   const merchantList = loadMerchants();
   const slotIds = new Set((group.merchants || []).map(m => m.id));
@@ -1597,23 +1712,14 @@ app.delete('/api/groups/:id', requireAuth, (req, res) => {
     const mIdx = merchantList.findIndex(m => m.id === sid);
     if (mIdx !== -1) {
       const m = merchantList[mIdx];
-      if (m._fromExisting) {
-        // 已有商户：只解绑，不删除
-        delete m.groupId;
-        delete m.groupSlot;
-        delete m._fromExisting;
-        m.enabled = true;
-      } else {
-        // 新创建商户：级联删除
-        try { if (m.fileName) { const zp = path.join(DATA_DIR, `${m.fileName}.zip`); if (fs.existsSync(zp)) fs.unlinkSync(zp); } } catch (e) {}
-        merchantList.splice(mIdx, 1);
-        merchantRuntimes.delete(sid);
-      }
+      try { if (m.fileName) { const zp = path.join(DATA_DIR, `${m.fileName}.zip`); if (fs.existsSync(zp)) fs.unlinkSync(zp); } } catch (e) {}
+      merchantList.splice(mIdx, 1);
+      merchantRuntimes.delete(sid);
     }
   }
   saveMerchants(merchantList);
   groups.splice(idx, 1);
-  saveGroups(groups);
+  saveGroups(groups).catch(err => console.error('[DB] 删除组后同步失败:', err.message));
   groupRuntimes.delete(req.params.id);
   res.json({ code: 'OK', message: '多通道组已删除' });
 });
@@ -1630,7 +1736,7 @@ app.put('/api/groups/:id/slots/:slotId/toggle', requireAuth, (req, res) => {
   const merchantList = loadMerchants();
   const m = merchantList.find(x => x.id === slot.id);
   if (m) { m.enabled = slot.enabled; saveMerchants(merchantList); }
-  saveGroups(groups);
+  saveGroups(groups).catch(err => console.error('[DB] 切换槽位后同步失败:', err.message));
   res.json({ code: 'OK', data: { enabled: slot.enabled } });
 });
 
@@ -1969,7 +2075,7 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
 
   // UID 模式（含 SDK 时走 trade.precreate；否则走个人转账链接）
   if (m.type === 'uid' || m.type === 'uid-simple') {
-    const alipaysUrl = `alipays://platformapi/startapp?appId=20000674&actionType=scan&biz_data=${encodeURIComponent(JSON.stringify({ s: 'money', u: m.alipayUid, a: amtNum.toFixed(2), m: subject }))}`;
+    const alipaysUrl = `alipays://platformapi/startapp?appId=20000123&actionType=scan&biz_data=${encodeURIComponent(JSON.stringify({ s: 'money', u: m.alipayUid, a: amtNum.toFixed(2), m: subject }))}`;
     if (rt.alipaySdk) {
       try {
         const notifyUrl = `${req.protocol}://${req.get('host')}/m/${m.id}/cashier/notify`;
@@ -1993,9 +2099,9 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
           if (m.type === 'uid-simple') {
             let qrDataUrl = '';
             try { qrDataUrl = await QRCode.toDataURL(tradeQrCode, { width: 300, margin: 2, color: { dark: '#000000', light: '#ffffff' } }); } catch (e) {}
-            return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: tradeQrCode, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: true, use_direct_redirect: true, message: '请使用支付宝扫码', slot_index: slotIndex });
+            return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: tradeQrCode, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: true, use_direct_redirect: true, slot_type: m.type, message: '请使用支付宝扫码', slot_index: slotIndex });
           }
-          return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: tradeQrCode, qr_image: qrDataUrl, amount, subject, use_api: true, message: '收款码已生成（自动确认模式）', slot_index: slotIndex });
+          return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: tradeQrCode, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: true, slot_type: m.type, message: '收款码已生成（自动确认模式）', slot_index: slotIndex });
         }
       } catch (e) { /* fallthrough */ }
     }
@@ -2008,7 +2114,7 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
       // 生成二维码图片，供非支付宝环境扫码
       let qrDataUrl = '';
       try { qrDataUrl = await QRCode.toDataURL(alipaysUrl, { width: 300, margin: 2, color: { dark: '#000000', light: '#ffffff' } }); } catch (e) {}
-      return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: alipaysUrl, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: false, use_direct_redirect: true, message: '请使用支付宝扫码', slot_index: slotIndex });
+      return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: alipaysUrl, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: false, use_direct_redirect: true, slot_type: m.type, message: '请使用支付宝扫码', slot_index: slotIndex });
     }
     // UID 标准模式生成二维码（用本机 base_url 走 /m/:slotMerchantId/pay/）
     const frontendBaseUrl = req.body.base_url || '';
@@ -2023,7 +2129,7 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
     setTimeout(() => rt.cashierOrders.delete(outTradeNo), 31 * 60 * 1000);
     rt.orders.push({ outTradeNo, amount: amtNum.toFixed(2), subject, status: 'generated', createdAt: new Date().toISOString(), paidAt: null, payerIp: getClientIp(req), useTradeApi: false, groupId: req.group.id, slotIndex });
     saveMerchantFile(m.id, 'orders', rt.orders);
-    return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: qrContent, qr_image: qrDataUrl, amount, subject, use_api: false, message: effectiveBaseUrl ? '请使用支付宝扫码转账' : '⚠️ 未配置跳转地址，二维码可能被支付宝拦截', slot_index: slotIndex });
+    return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: qrContent, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: false, slot_type: m.type, message: effectiveBaseUrl ? '请使用支付宝扫码转账' : '⚠️ 未配置跳转地址，二维码可能被支付宝拦截', slot_index: slotIndex });
   }
 
   // 当面付
@@ -2451,7 +2557,7 @@ app.post('/m/:id/cashier/qrcode', express.json(), async (req, res) => {
     }
 
     // 无 SDK 或 trade.precreate 失败：使用个人转账 URL（需手动确认到账）
-    const alipaysUrl = `alipays://platformapi/startapp?appId=20000674&actionType=scan&biz_data=${encodeURIComponent(JSON.stringify({ s: 'money', u: m.alipayUid, a: amtNum.toFixed(2), m: subject }))}`;
+    const alipaysUrl = `alipays://platformapi/startapp?appId=20000123&actionType=scan&biz_data=${encodeURIComponent(JSON.stringify({ s: 'money', u: m.alipayUid, a: amtNum.toFixed(2), m: subject }))}`;
 
     if (m.type === 'uid-simple') {
       // UID 简易支付: 直接返回 alipays:// 链接，前端在支付宝内直接跳转；非支付宝环境展示二维码
