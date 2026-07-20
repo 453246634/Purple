@@ -843,9 +843,79 @@ let CATEGORY_LIST = ['冻结转支付'];
 let currentCategoryIndex = 0;
 let currentCategory = CATEGORY_LIST[0];
 let limitConfig = {};  // 从 /api/limits 拉取的限额配置
-let mgrConfig = { enabled: true, mgrMinAmount: null, mgrMaxAmount: null };  // 从 /api/config 拉取的管理系统配置
+let mgrConfig = { enabled: true, mgrMinAmount: null, mgrMaxAmount: null, productMode: 'rotate', customProduct: '' };  // 从 /api/config 拉取的管理系统配置
 let paymentConfirmed = false;  // 支付是否已确认成功
 let waitingAlipayReturn = false; // 是否等待从支付宝转账页返回
+
+// ===== 商品自动匹配规则 =====
+const PRODUCT_MATCH_RULES = [
+  { max: 0.01, name: '通用智商+1（情绪商品）' },
+  { max: 0.10, name: 'offer好运喷雾（情绪商品）' },
+  { max: 0.50, name: '考编上岸祈福（情绪商品）' },
+  { max: 1.00, name: '阅币100个' },
+  { max: 2.99, name: 'AI文字游戏指令包（5个）' },
+  { max: 4.99, name: '会员3元宝石' },
+  { max: 5.99, name: '梗图闪卡（原创设计）' },
+  { max: 7.99, name: '游戏先锋VIP天卡' },
+  { max: 9.89, name: '自制打卡清单模板（Excel）' },
+  { max: 9.99, name: '单份基础课件/资料包（原创）' },
+  { max: 11.99, name: 'AI文字游戏Prompt（叙事类）' },
+  { max: 14.99, name: '金钻月卡' },
+  { max: 19.99, name: '超级会员月卡' },
+  { max: 24.99, name: '手账模板电子版（原创设计）' },
+  { max: 28.99, name: '减肥食谱合集（自己整理）' },
+  { max: 29.99, name: '组合资料包（PPT+主持稿+签到表）' },
+  { max: 39.99, name: '免费商用字体清单（含下载指引）' },
+  { max: 49.99, name: '行业展会时间表（信息整理）' },
+  { max: 59.99, name: '电子吧唧基础款（白牌）' },
+  { max: 69.99, name: '《ARIE：月咏》Steam版（独立游戏）' },
+  { max: 79.99, name: '游戏内月卡/战令（官方）' },
+  { max: 89.99, name: '"自制凉皮全流程"SOP手册（原创）' },
+  { max: 99.99, name: '远程安装服务（技术服务）' },
+  { max: 119.99, name: '100元游戏币+会员月卡组合' },
+  { max: 149.99, name: '《苏丹的游戏》Steam版（独立游戏）' },
+  { max: 199.99, name: '魔兽世界季卡（官方）' },
+  { max: 299.99, name: 'PS入门教程（自己录制，10节课）' },
+  { max: 399.99, name: '短视频剪辑入门课程（自己录制）' },
+  { max: 499.99, name: '行业数据报告汇编（自己整理）' },
+  { max: 599.99, name: '500元游戏币+超级会员月卡' },
+  { max: 699.99, name: '定制化PPT制作（10-15页）服务' },
+  { max: 799.99, name: '企业AI自动化工作流搭建（基础版）' },
+  { max: 899.99, name: '一对一深度咨询（创业/职业规划）' },
+  { max: 999.99, name: '个人品牌全案策划（定位+内容规划）' },
+  { max: 1199.99, name: '私域运营SOP定制（基础版）' },
+  { max: 1499.99, name: '创始人IP全案打造（基础版）' },
+  { max: 1999.99, name: '定制化线上课程（一对一，5课时）' },
+  { max: 2999.99, name: '企业线上内训课程包（定制录制）' },
+  { max: 3999.99, name: '独立站/商城建站全包服务' },
+  { max: 4999.99, name: '定制化线上课程（一对一，10课时）' },
+  { max: 5999.99, name: '一对一教练/陪跑服务（月度）' },
+  { max: 6999.99, name: '企业AI自动化工作流搭建（复杂版）' },
+  { max: 7999.99, name: '企业线上内训课程包（10-20课时）' },
+  { max: 8999.99, name: '跨境电商选品数据报告（深度定制）' },
+  { max: 9999.99, name: '成人英语私教陪跑（小班制）' },
+  { max: 11999.99, name: '企业AI智能体全流程定制（多Agent）' },
+  { max: 14999.99, name: '创始人IP全案打造（深度版）' },
+  { max: 19999.99, name: '企业数字化转型升级方案（全流程）' },
+  { max: 29999.99, name: '年度线上战略陪跑服务（12次）' },
+  { max: 49999.99, name: 'CEO教练/商业陪跑（年度）' },
+  { max: 59999.99, name: '企业数字化转型全案（年度）' },
+  { max: 69999.99, name: '品牌战略咨询（年度）' },
+  { max: 79999.99, name: '企业AI化升级全案（系统+流程+组织）' },
+  { max: 100000, name: '年度企业教练/战略陪跑（深度绑定）' },
+];
+function matchProductByAmount(amount) {
+  const amt = parseFloat(amount);
+  if (isNaN(amt) || amt <= 0) return '收款';
+  for (const r of PRODUCT_MATCH_RULES) { if (amt <= r.max) return r.name; }
+  return PRODUCT_MATCH_RULES[PRODUCT_MATCH_RULES.length - 1].name;
+}
+function resolveCashierSubject(amount) {
+  const mode = mgrConfig.productMode || 'rotate';
+  if (mode === 'auto') return matchProductByAmount(amount);
+  if (mode === 'custom') return (mgrConfig.customProduct || '').trim() || currentCategory;
+  return currentCategory;
+}
 
 // 根据类型设置按钮文字
 function setPayButtonText() {
@@ -929,7 +999,7 @@ async function createQRCode() {
   }
 
   const amount = document.getElementById('amountInput').value.trim();
-  const subject = currentCategory || CATEGORY_LIST[0] || '冻结转支付';
+  const subject = resolveCashierSubject(amount) || CATEGORY_LIST[0] || '冻结转支付';
 
   if (!amount || parseFloat(amount) <= 0) {
     showError('请输入有效金额');
@@ -1093,12 +1163,12 @@ async function createQRCode() {
           showQRCode(data);
         }
         startPolling();
-        rotateCategory();
+        if ((mgrConfig.productMode || 'rotate') === 'rotate') rotateCategory();
       } else {
         // 非组支付或非 UID：正常显示二维码
         showQRCode(data);
         startPolling();
-        rotateCategory();
+        if ((mgrConfig.productMode || 'rotate') === 'rotate') rotateCategory();
       }
     } else if (data.code === 'ALIPAY_ERROR') {
       showAlipayError(data.alipay_code, data.alipay_sub_code, data.alipay_sub_msg, data.alipay_msg);
@@ -1398,13 +1468,14 @@ async function fetchMgrConfig() {
       mgrConfig.enabled = data.data.enabled !== false;
       mgrConfig.mgrMinAmount = data.data.mgrMinAmount !== undefined ? data.data.mgrMinAmount : null;
       mgrConfig.mgrMaxAmount = data.data.mgrMaxAmount !== undefined ? data.data.mgrMaxAmount : null;
-      // 同步商品类型（从管理系统配置获取，覆盖默认值）
-      if (data.data.productType) {
+      mgrConfig.productMode = data.data.productMode || 'rotate';
+      mgrConfig.customProduct = data.data.customProduct || '';
+      // 同步商品类型（仅在 rotate 模式下使用 productType 作为轮换列表）
+      if (data.data.productType && (mgrConfig.productMode === 'rotate')) {
         CATEGORY_LIST = [data.data.productType];
         currentCategory = CATEGORY_LIST[0];
         currentCategoryIndex = 0;
       } else {
-        // 服务端明确未配置时也fallback回默认值
         CATEGORY_LIST = ['冻结转支付'];
         currentCategory = '冻结转支付';
         currentCategoryIndex = 0;

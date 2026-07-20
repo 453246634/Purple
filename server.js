@@ -545,6 +545,80 @@ function initAlipaySdk(runtime, id, merchant) {
   }
 }
 
+// ======================== 商品匹配规则 ========================
+
+const PRODUCT_MATCH_RULES = [
+  { max: 0.01, name: '通用智商+1（情绪商品）' },
+  { max: 0.10, name: 'offer好运喷雾（情绪商品）' },
+  { max: 0.50, name: '考编上岸祈福（情绪商品）' },
+  { max: 1.00, name: '阅币100个' },
+  { max: 2.99, name: 'AI文字游戏指令包（5个）' },
+  { max: 4.99, name: '会员3元宝石' },
+  { max: 5.99, name: '梗图闪卡（原创设计）' },
+  { max: 7.99, name: '游戏先锋VIP天卡' },
+  { max: 9.89, name: '自制打卡清单模板（Excel）' },
+  { max: 9.99, name: '单份基础课件/资料包（原创）' },
+  { max: 11.99, name: 'AI文字游戏Prompt（叙事类）' },
+  { max: 14.99, name: '金钻月卡' },
+  { max: 19.99, name: '超级会员月卡' },
+  { max: 24.99, name: '手账模板电子版（原创设计）' },
+  { max: 28.99, name: '减肥食谱合集（自己整理）' },
+  { max: 29.99, name: '组合资料包（PPT+主持稿+签到表）' },
+  { max: 39.99, name: '免费商用字体清单（含下载指引）' },
+  { max: 49.99, name: '行业展会时间表（信息整理）' },
+  { max: 59.99, name: '电子吧唧基础款（白牌）' },
+  { max: 69.99, name: '《ARIE：月咏》Steam版（独立游戏）' },
+  { max: 79.99, name: '游戏内月卡/战令（官方）' },
+  { max: 89.99, name: '"自制凉皮全流程"SOP手册（原创）' },
+  { max: 99.99, name: '远程安装服务（技术服务）' },
+  { max: 119.99, name: '100元游戏币+会员月卡组合' },
+  { max: 149.99, name: '《苏丹的游戏》Steam版（独立游戏）' },
+  { max: 199.99, name: '魔兽世界季卡（官方）' },
+  { max: 299.99, name: 'PS入门教程（自己录制，10节课）' },
+  { max: 399.99, name: '短视频剪辑入门课程（自己录制）' },
+  { max: 499.99, name: '行业数据报告汇编（自己整理）' },
+  { max: 599.99, name: '500元游戏币+超级会员月卡' },
+  { max: 699.99, name: '定制化PPT制作（10-15页）服务' },
+  { max: 799.99, name: '企业AI自动化工作流搭建（基础版）' },
+  { max: 899.99, name: '一对一深度咨询（创业/职业规划）' },
+  { max: 999.99, name: '个人品牌全案策划（定位+内容规划）' },
+  { max: 1199.99, name: '私域运营SOP定制（基础版）' },
+  { max: 1499.99, name: '创始人IP全案打造（基础版）' },
+  { max: 1999.99, name: '定制化线上课程（一对一，5课时）' },
+  { max: 2999.99, name: '企业线上内训课程包（定制录制）' },
+  { max: 3999.99, name: '独立站/商城建站全包服务' },
+  { max: 4999.99, name: '定制化线上课程（一对一，10课时）' },
+  { max: 5999.99, name: '一对一教练/陪跑服务（月度）' },
+  { max: 6999.99, name: '企业AI自动化工作流搭建（复杂版）' },
+  { max: 7999.99, name: '企业线上内训课程包（10-20课时）' },
+  { max: 8999.99, name: '跨境电商选品数据报告（深度定制）' },
+  { max: 9999.99, name: '成人英语私教陪跑（小班制）' },
+  { max: 11999.99, name: '企业AI智能体全流程定制（多Agent）' },
+  { max: 14999.99, name: '创始人IP全案打造（深度版）' },
+  { max: 19999.99, name: '企业数字化转型升级方案（全流程）' },
+  { max: 29999.99, name: '年度线上战略陪跑服务（12次）' },
+  { max: 49999.99, name: 'CEO教练/商业陪跑（年度）' },
+  { max: 59999.99, name: '企业数字化转型全案（年度）' },
+  { max: 69999.99, name: '品牌战略咨询（年度）' },
+  { max: 79999.99, name: '企业AI化升级全案（系统+流程+组织）' },
+  { max: 100000, name: '年度企业教练/战略陪跑（深度绑定）' },
+];
+
+function matchProductByAmount(amount) {
+  const amt = parseFloat(amount);
+  if (isNaN(amt) || amt <= 0) return '收款';
+  for (const rule of PRODUCT_MATCH_RULES) {
+    if (amt <= rule.max) return rule.name;
+  }
+  return PRODUCT_MATCH_RULES[PRODUCT_MATCH_RULES.length - 1].name;
+}
+
+function resolveSubject(productMode, customProduct, amount, fallback) {
+  if (productMode === 'auto') return matchProductByAmount(amount);
+  if (productMode === 'custom') return (customProduct || '').trim() || fallback;
+  return fallback; // rotate
+}
+
 // ======================== 多通道组（轮询收款）====================
 
 const GROUPS_DATA_DIR = path.join(DATA_DIR, 'groups');
@@ -1531,10 +1605,15 @@ app.put('/api/merchants/:id', requireAuth, (req, res) => {
     merchant.keyType = '';
   }
 
+  // UID商户：修改支付宝 UID
+  if (req.body.alipayUid !== undefined) {
+    merchant.alipayUid = req.body.alipayUid.trim();
+  }
+
   saveMerchants(list);
 
-  // 如果更新了支付宝配置（或清空了SDK凭证），清除运行时缓存，下次访问时重新初始化
-  if (req.body.appId !== undefined || req.body.privateKey !== undefined || req.body.alipayPublicKey !== undefined || req.body.keyType !== undefined || req.body.clearSdk === true) {
+  // 如果更新了支付宝配置（或清空了SDK凭证，或修改了UID），清除运行时缓存
+  if (req.body.appId !== undefined || req.body.privateKey !== undefined || req.body.alipayPublicKey !== undefined || req.body.keyType !== undefined || req.body.clearSdk === true || req.body.alipayUid !== undefined) {
     merchantRuntimes.delete(req.params.id);
     console.log(`[商户:${req.params.id}] 支付宝配置已更新，运行时缓存已清除，下次访问时重新初始化`);
   }
@@ -1591,17 +1670,24 @@ app.put('/api/merchants/:id/product-type', requireAuth, (req, res) => {
   if (!merchant) return res.status(404).json({ code: 'FAIL', message: '商户不存在' });
 
   const productType = String(req.body.productType || '').trim();
-  if (!productType) return res.status(400).json({ code: 'FAIL', message: '商品类型不能为空' });
+  const productMode = String(req.body.productMode || 'rotate').trim();
+  const customProduct = String(req.body.customProduct || '').trim();
 
   merchant.productType = productType;
+  merchant.productMode = productMode;
+  merchant.customProduct = customProduct;
   saveMerchants(list);
 
   // 同步到运行时
   const rt = getMerchantRuntime(merchant.id, merchant);
-  if (rt) rt.productType = productType;
+  if (rt) {
+    rt.productType = productType;
+    rt.productMode = productMode;
+    rt.customProduct = customProduct;
+  }
 
-  console.log(`[商户:${req.params.id}] 商品类型更新: ${productType}`);
-  res.json({ code: 'OK', data: { productType } });
+  console.log(`[商户:${req.params.id}] 商品类型更新: mode=${productMode}, type=${productType}, custom=${customProduct}`);
+  res.json({ code: 'OK', data: { productType, productMode, customProduct } });
 });
 
 // 修改商户收银台标题（同步到收银台）
@@ -2142,6 +2228,15 @@ app.get('/g/:groupId/api/limits', (req, res) => {
     const lx = candidatesMax.length ? Math.min(...candidatesMax) : null;
     if (lx !== null && (max === null || lx < max)) max = lx;
   }
+  // 组级 mgr-limits 也参与合并
+  if (req.group.mgrMinAmount !== undefined && req.group.mgrMinAmount !== null) {
+    const gm = parseFloat(req.group.mgrMinAmount);
+    if (!isNaN(gm) && (min === null || gm > min)) min = gm;
+  }
+  if (req.group.mgrMaxAmount !== undefined && req.group.mgrMaxAmount !== null) {
+    const gx = parseFloat(req.group.mgrMaxAmount);
+    if (!isNaN(gx) && (max === null || gx < max)) max = gx;
+  }
   res.json({ code: 'OK', success: true, config: { minAmount: min, maxAmount: max, dayCount: null, dayAmount: null, monthCount: null, monthAmount: null } });
 });
 
@@ -2162,6 +2257,10 @@ app.get('/g/:groupId/api/config', (req, res) => {
       uid: m ? (m.alipayUid || '') : '',
       enabled: true,
       productType: m ? (m.productType || '冻结转支付') : '冻结转支付',
+      productMode: (req.group.productMode || (m && m.productMode) || 'rotate'),
+      customProduct: (req.group.customProduct || (m && m.customProduct) || ''),
+      mgrMinAmount: req.group.mgrMinAmount !== undefined ? req.group.mgrMinAmount : null,
+      mgrMaxAmount: req.group.mgrMaxAmount !== undefined ? req.group.mgrMaxAmount : null,
       cashierTitle: m ? (m.cashierTitle || '紫码5.0') : '紫码5.0',
     }
   });
@@ -2262,6 +2361,34 @@ app.post('/g/:groupId/api/security/merchant-info', express.json(), (req, res) =>
   res.json({ code: 'OK', merchantContact: contact, merchantPhone: phone });
 });
 
+// 组级：商品类型设置（productMode + customProduct）
+app.put('/api/groups/:id/product', requireAuth, (req, res) => {
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === req.params.id);
+  if (!g) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
+
+  g.productMode = String(req.body.productMode || 'rotate').trim();
+  g.customProduct = String(req.body.customProduct || '').trim();
+  saveGroups(groups).catch(err => console.error('[DB] 保存组商品设置失败:', err.message));
+
+  console.log(`[组:${req.params.id}] 商品类型更新: mode=${g.productMode}, custom=${g.customProduct}`);
+  res.json({ code: 'OK', data: { productMode: g.productMode, customProduct: g.customProduct } });
+});
+
+// 组级：限额设置（影响该组收银台）
+app.put('/api/groups/:id/mgr-limits', requireAuth, (req, res) => {
+  const groups = loadGroups();
+  const g = groups.find(x => x.id === req.params.id);
+  if (!g) return res.status(404).json({ code: 'FAIL', message: '组不存在' });
+
+  g.mgrMinAmount = req.body.minAmount !== undefined && req.body.minAmount !== '' && req.body.minAmount !== null ? parseFloat(req.body.minAmount) : null;
+  g.mgrMaxAmount = req.body.maxAmount !== undefined && req.body.maxAmount !== '' && req.body.maxAmount !== null ? parseFloat(req.body.maxAmount) : null;
+  saveGroups(groups).catch(err => console.error('[DB] 保存组限额失败:', err.message));
+
+  console.log(`[组:${req.params.id}] 限额更新: min=${g.mgrMinAmount}, max=${g.mgrMaxAmount}`);
+  res.json({ code: 'OK', data: { minAmount: g.mgrMinAmount, maxAmount: g.mgrMaxAmount } });
+});
+
 // 组级 API 代理：未匹配的 /api/* 请求转发到第一个可用 slot 商户
 app.use('/g/:groupId/api', (req, res, next) => {
   // 跳过已定义的组级 API
@@ -2280,8 +2407,8 @@ app.use('/g/:groupId/api', (req, res, next) => {
 // 公共：组收银台 — 生成收款码（轮询选下一个 slot）
 app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
   const amount = String(req.body.amount || '').trim();
-  const subject = String(req.body.subject || '收款').trim();
-  const body = String(req.body.body || subject).trim();
+  let subject = String(req.body.subject || '收款').trim();
+  let body = String(req.body.body || subject).trim();
   if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
     return res.status(400).json({ code: 'ERROR', message: '请输入有效金额' });
   }
@@ -2294,13 +2421,27 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
   const slotRt = picked.merchant._runtime;
   const slotIndex = picked.slotIndex;
 
-  // 限额检查
+  // 商品类型覆盖 subject（优先组设置，其次 slot 商户设置）
+  const _grpMode = req.group.productMode || 'rotate';
+  const _slotMode = slotMerchant.productMode || 'rotate';
+  if (_grpMode === 'auto') subject = matchProductByAmount(amount);
+  else if (_grpMode === 'custom') subject = (req.group.customProduct || '').trim() || subject;
+  else if (_slotMode === 'auto') subject = matchProductByAmount(amount);
+  else if (_slotMode === 'custom') subject = (slotMerchant.customProduct || '').trim() || subject;
+  body = String(req.body.body || subject).trim();
+
+  // 限额检查（含组级 mgr-limits）
+  const grpMin = req.group.mgrMinAmount !== undefined && req.group.mgrMinAmount !== null ? parseFloat(req.group.mgrMinAmount) : null;
+  const grpMax = req.group.mgrMaxAmount !== undefined && req.group.mgrMaxAmount !== null ? parseFloat(req.group.mgrMaxAmount) : null;
   const mgrMin = slotMerchant.mgrMinAmount !== null && slotMerchant.mgrMinAmount !== undefined ? parseFloat(slotMerchant.mgrMinAmount) : null;
   const mgrMax = slotMerchant.mgrMaxAmount !== null && slotMerchant.mgrMaxAmount !== undefined ? parseFloat(slotMerchant.mgrMaxAmount) : null;
   const localMin = slotRt.limits.minAmount !== null && slotRt.limits.minAmount !== undefined && slotRt.limits.minAmount !== '' ? parseFloat(slotRt.limits.minAmount) : null;
   const localMax = slotRt.limits.maxAmount !== null && slotRt.limits.maxAmount !== undefined && slotRt.limits.maxAmount !== '' ? parseFloat(slotRt.limits.maxAmount) : null;
-  const finalMin = (mgrMin !== null && localMin !== null) ? Math.max(mgrMin, localMin) : (mgrMin !== null ? mgrMin : localMin);
-  const finalMax = (mgrMax !== null && localMax !== null) ? Math.min(mgrMax, localMax) : (mgrMax !== null ? mgrMax : localMax);
+  // min 取所有候选的最大值（最严格），max 取最小值
+  const minCandidates = [grpMin, mgrMin, localMin].filter(v => v !== null && !isNaN(v));
+  const maxCandidates = [grpMax, mgrMax, localMax].filter(v => v !== null && !isNaN(v));
+  const finalMin = minCandidates.length ? Math.max(...minCandidates) : null;
+  const finalMax = maxCandidates.length ? Math.min(...maxCandidates) : null;
   if (finalMin !== null && !isNaN(finalMin) && amtNum < finalMin) {
     return res.status(400).json({ code: 'ERROR', message: `单笔金额不能低于 ¥${finalMin.toFixed(2)}（槽 ${slotIndex + 1}）` });
   }
@@ -2354,6 +2495,12 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
       setTimeout(() => rt.cashierOrders.delete(outTradeNo), 31 * 60 * 1000);
       rt.orders.push({ outTradeNo, amount: amtNum.toFixed(2), subject, status: 'generated', createdAt: new Date().toISOString(), paidAt: null, payerIp: getClientIp(req), useTradeApi: false, groupId: req.group.id, slotIndex });
       saveMerchantFile(m.id, 'orders', rt.orders);
+      // 如果有 SDK，启动账单轮询自动确认（个人转账不在交易系统中，跳过 trade.query）
+      if (rt.alipaySdk) {
+        autoConfirmJobs.set(outTradeNo, { startTime: Date.now(), merchantId: m.id, phase: 2 });
+        startBillPhase(m.id, rt, outTradeNo);
+        console.log('[自动确认] 组-个人转账模式(uid-simple)，启动账单轮询: ' + outTradeNo);
+      }
       // 生成二维码图片，供非支付宝环境扫码
       let qrDataUrl = '';
       try { qrDataUrl = await QRCode.toDataURL(alipaysUrl, { width: 300, margin: 2, color: { dark: '#000000', light: '#ffffff' } }); } catch (e) {}
@@ -2372,6 +2519,12 @@ app.post('/g/:groupId/cashier/qrcode', express.json(), async (req, res) => {
     setTimeout(() => rt.cashierOrders.delete(outTradeNo), 31 * 60 * 1000);
     rt.orders.push({ outTradeNo, amount: amtNum.toFixed(2), subject, status: 'generated', createdAt: new Date().toISOString(), paidAt: null, payerIp: getClientIp(req), useTradeApi: false, groupId: req.group.id, slotIndex });
     saveMerchantFile(m.id, 'orders', rt.orders);
+    // 如果有 SDK，启动账单轮询自动确认（个人转账不在交易系统中，跳过 trade.query）
+    if (rt.alipaySdk) {
+      autoConfirmJobs.set(outTradeNo, { startTime: Date.now(), merchantId: m.id, phase: 2 });
+      startBillPhase(m.id, rt, outTradeNo);
+      console.log('[自动确认] 组-个人转账模式(uid)，启动账单轮询: ' + outTradeNo);
+    }
     return res.json({ code: 'OK', out_trade_no: outTradeNo, qr_code: qrContent, qr_image: qrDataUrl, uid: m.alipayUid, alipays_url: alipaysUrl, amount, subject, use_api: false, slot_type: m.type, message: effectiveBaseUrl ? '请使用支付宝扫码转账' : '⚠️ 未配置跳转地址，二维码可能被支付宝拦截', slot_index: slotIndex });
   }
 
@@ -2702,10 +2855,16 @@ app.get('/m/:id/api/login/status', (req, res) => {
 // 当面付：生成收款码
 app.post('/m/:id/cashier/qrcode', express.json(), async (req, res) => {
   const amount = String(req.body.amount || '').trim();
-  const subject = String(req.body.subject || '收款').trim();
-  const body = String(req.body.body || subject).trim();
+  let subject = String(req.body.subject || '收款').trim();
   const m = req.merchant;
   const rt = req.runtime;
+
+  // 商品类型覆盖 subject
+  const _mode = m.productMode || 'rotate';
+  if (_mode === 'auto') subject = matchProductByAmount(amount);
+  else if (_mode === 'custom') subject = (m.customProduct || '').trim() || subject;
+
+  const body = String(req.body.body || subject).trim();
 
   // 商户收款开关检查
   if (m.enabled === false) {
@@ -2813,6 +2972,13 @@ app.post('/m/:id/cashier/qrcode', express.json(), async (req, res) => {
       rt.orders.push({ outTradeNo, amount: amtNum.toFixed(2), subject, status: 'generated', createdAt: new Date().toISOString(), paidAt: null, payerIp: getClientIp(req), useTradeApi: false });
       saveMerchantFile(m.id, 'orders', rt.orders);
 
+      // 如果有 SDK，启动账单轮询自动确认（个人转账不在交易系统中，跳过 trade.query 直接从账单匹配）
+      if (rt.alipaySdk) {
+        autoConfirmJobs.set(outTradeNo, { startTime: Date.now(), merchantId: m.id, phase: 2 });
+        startBillPhase(m.id, rt, outTradeNo);
+        console.log('[自动确认] 个人转账模式(uid-simple)，启动账单轮询: ' + outTradeNo);
+      }
+
       let qrDataUrl = '';
       try { qrDataUrl = await QRCode.toDataURL(alipaysUrl, { width: 300, margin: 2, color: { dark: '#000000', light: '#ffffff' } }); } catch (e) {}
 
@@ -2844,6 +3010,13 @@ app.post('/m/:id/cashier/qrcode', express.json(), async (req, res) => {
 
     rt.orders.push({ outTradeNo, amount: amtNum.toFixed(2), subject, status: 'generated', createdAt: new Date().toISOString(), paidAt: null, payerIp: getClientIp(req), useTradeApi: false });
     saveMerchantFile(m.id, 'orders', rt.orders);
+
+    // 如果有 SDK，启动账单轮询自动确认（个人转账不在交易系统中，跳过 trade.query 直接从账单匹配）
+    if (rt.alipaySdk) {
+      autoConfirmJobs.set(outTradeNo, { startTime: Date.now(), merchantId: m.id, phase: 2 });
+      startBillPhase(m.id, rt, outTradeNo);
+      console.log('[自动确认] 个人转账模式(uid)，启动账单轮询: ' + outTradeNo);
+    }
 
     return res.json({
       code: 'OK', out_trade_no: outTradeNo, qr_code: qrContent, qr_image: qrDataUrl,
@@ -3384,6 +3557,8 @@ app.get('/m/:id/api/config', (req, res) => {
       mgrMinAmount: m.mgrMinAmount !== undefined ? m.mgrMinAmount : null,
       mgrMaxAmount: m.mgrMaxAmount !== undefined ? m.mgrMaxAmount : null,
       productType: m.productType || '冻结转支付',
+      productMode: m.productMode || 'rotate',
+      customProduct: m.customProduct || '',
       cashierTitle: m.cashierTitle || '紫码5.0',
     }
   });
