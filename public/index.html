@@ -397,6 +397,63 @@
     box-shadow: 0 2px 10px rgba(126, 63, 242,0.3);
   }
 
+  /* ===== 列表切换标签栏 ===== */
+  .list-toggle-bar {
+    display: flex; gap: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 6px;
+    margin: 20px 32px 0;
+  }
+  .list-toggle {
+    flex: 1; text-align: center;
+    padding: 12px 0;
+    font-size: 14px; font-weight: 700;
+    color: var(--text-dim);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.25s;
+    user-select: none;
+  }
+  .list-toggle:hover { color: var(--text); }
+  .list-toggle.active {
+    background: linear-gradient(135deg, var(--gold), rgba(126, 63, 242,0.7));
+    color: #000;
+    box-shadow: 0 2px 10px rgba(126, 63, 242,0.3);
+  }
+
+  /* ===== 分页 ===== */
+  .pagination-bar {
+    display: flex; align-items: center; justify-content: center;
+    gap: 16px;
+    padding: 16px 0 8px;
+  }
+  .pagination-btn {
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .pagination-btn:hover:not(:disabled) {
+    background: var(--gold);
+    color: #000;
+    border-color: var(--gold);
+  }
+  .pagination-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .pagination-info {
+    font-size: 13px; color: var(--text-dim);
+    font-weight: 600;
+    min-width: 80px; text-align: center;
+  }
+
   /* ===== 多通道进件面板 ===== */
   .multi-channel-panel { animation: panelIn 0.3s ease; }
   @keyframes panelIn {
@@ -964,6 +1021,12 @@
   </div>
 </div>
 
+<!-- 列表切换标签 -->
+<div class="list-toggle-bar">
+  <div class="list-toggle active" data-list="merchant" onclick="switchListTab('merchant')">商户列表</div>
+  <div class="list-toggle" data-list="group" onclick="switchListTab('group')">多通道组（轮询收款）列表</div>
+</div>
+
 <!-- 多通道组列表 -->
 <div class="group-section" id="groupSection" style="display:none;">
   <div class="section-header">
@@ -975,7 +1038,7 @@
       <thead>
         <tr>
           <th>组名称</th>
-          <th>登录手机号</th>
+          <th>登录账号</th>
           <th>槽位商户（轮询顺序）</th>
           <th>收银台</th>
           <th>管理后台</th>
@@ -989,6 +1052,11 @@
       <div class="empty-icon">🔁</div>
       <div class="empty-text">暂无多通道组。在「增加商户」弹窗中选择「多通道进件」可创建。</div>
     </div>
+  </div>
+  <div class="pagination-bar" id="groupPaginationBar" style="display:none;">
+    <button class="pagination-btn" id="groupPrevBtn" onclick="changeGroupPage(-1)">‹ 上一页</button>
+    <span class="pagination-info" id="groupPageInfo">1/1</span>
+    <button class="pagination-btn" id="groupNextBtn" onclick="changeGroupPage(1)">下一页 ›</button>
   </div>
 </div>
 
@@ -1004,7 +1072,7 @@
 </div>
 
 <!-- 商户列表 -->
-<div class="merchant-section">
+<div class="merchant-section" id="merchantSection">
   <div class="section-header">
     <div class="section-title">商户列表</div>
     <div class="merchant-count" id="merchantCount"></div>
@@ -1016,6 +1084,7 @@
           <th>商户名称</th>
           <th>进件类型</th>
           <th>APPID / UID</th>
+          <th>登录账号</th>
           <th>手机号</th>
           <th>私钥格式</th>
           <th>创建时间</th>
@@ -1029,6 +1098,11 @@
       <div class="empty-icon">📦</div>
       <div class="empty-text">暂无商户，点击右上角「增加商户」开始</div>
     </div>
+  </div>
+  <div class="pagination-bar" id="merchantPaginationBar" style="display:none;">
+    <button class="pagination-btn" id="merchantPrevBtn" onclick="changeMerchantPage(-1)">‹ 上一页</button>
+    <span class="pagination-info" id="merchantPageInfo">1/1</span>
+    <button class="pagination-btn" id="merchantNextBtn" onclick="changeMerchantPage(1)">下一页 ›</button>
   </div>
 </div>
 
@@ -1079,9 +1153,9 @@
         <input type="text" class="form-input" id="inputGroupName" placeholder="如：轮询收款A组" style="font-family:inherit;">
       </div>
       <div class="form-group" style="margin-bottom:14px;">
-        <label class="form-label form-label-required">登录手机号</label>
-        <div class="form-hint">该手机号作为多通道组的登录账号，默认密码 yy123456</div>
-        <input type="tel" class="form-input" id="inputGroupPhone" placeholder="11位手机号" maxlength="11" style="font-family:inherit;">
+        <label class="form-label">手机号（选填）</label>
+        <div class="form-hint">用于备注联系。登录账号由系统自动生成，默认密码 yy123456</div>
+        <input type="tel" class="form-input" id="inputGroupPhone" placeholder="选填，11位手机号" maxlength="11" style="font-family:inherit;">
       </div>
 
       <div class="form-label" style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
@@ -1120,9 +1194,9 @@
         <input type="text" class="form-input" id="inputMerchantName" placeholder="如：张三" style="font-family:inherit;">
       </div>
       <div class="form-group">
-        <label class="form-label form-label-required">手机号（登录账号）</label>
-        <div class="form-hint">用于登录该商户的收款后台，默认密码 yy123456</div>
-        <input type="tel" class="form-input" id="inputPhone" placeholder="如：13800138000" maxlength="11" style="font-family:inherit;">
+        <label class="form-label">手机号（选填）</label>
+        <div class="form-hint">用于商户备注联系。登录账号由系统自动生成，默认密码 yy123456</div>
+        <input type="tel" class="form-input" id="inputPhone" placeholder="选填，如：13800138000" maxlength="11" style="font-family:inherit;">
       </div>
       <div class="form-group">
         <label class="form-label form-label-required">支付宝 APPID</label>
@@ -1170,9 +1244,9 @@
         <input type="text" class="form-input" id="inputUidMerchantName" placeholder="如：张三" style="font-family:inherit;">
       </div>
       <div class="form-group">
-        <label class="form-label form-label-required">手机号（登录账号）</label>
-        <div class="form-hint">用于登录该商户的收款后台，默认密码 yy123456</div>
-        <input type="tel" class="form-input" id="inputUidPhone" placeholder="如：13800138000" maxlength="11" style="font-family:inherit;">
+        <label class="form-label">手机号（选填）</label>
+        <div class="form-hint">用于商户备注联系。登录账号由系统自动生成，默认密码 yy123456</div>
+        <input type="tel" class="form-input" id="inputUidPhone" placeholder="选填，如：13800138000" maxlength="11" style="font-family:inherit;">
       </div>
       <div class="form-group">
         <label class="form-label form-label-required">支付宝 UID</label>
@@ -1180,7 +1254,7 @@
         <input type="text" class="form-input" id="inputAlipayUid" placeholder="如：2088..." style="font-family:Consolas,monospace;" maxlength="16">
       </div>
       <div class="form-group" style="border:1px solid rgba(52,152,219,0.2);border-radius:8px;padding:12px 14px;background:rgba(52,152,219,0.05);margin-top:16px;">
-        <span style="color:#3498db;font-size:12px;">💡 UID 模式说明：扫码唤起支付宝转账页面，金额已锁定，付款方只需确认转账。到账需手动点击「确认到账」。后续可在商户详情中「配置支付宝凭证」启用自动确认到账。</span>
+        <span style="color:#3498db;font-size:12px;">💡 UID 模式说明：扫码唤起支付宝转账页面，金额已锁定，付款方只需确认转账。用户支付完成后返回收银台，系统即可实时标记到账，无需支付宝应用凭证。</span>
       </div>
     </div>
     <div class="modal-footer">
@@ -1334,10 +1408,10 @@
 <div class="login-overlay" id="merchantLoginModal">
   <div class="login-box">
     <div class="login-title">登录收款后台</div>
-    <div class="login-sub">请输入该商户的手机号和密码</div>
+    <div class="login-sub">请输入该商户的登录账号和密码</div>
     <div class="form-group">
-      <label class="form-label form-label-required">手机号</label>
-      <input type="tel" class="form-input" id="loginPhone" placeholder="请输入手机号" maxlength="11" style="font-family:inherit;" onkeydown="if(event.key==='Enter')document.getElementById('loginPassword').focus()">
+      <label class="form-label form-label-required">登录账号</label>
+      <input type="text" class="form-input" id="loginPhone" placeholder="请输入登录账号（7位数字）" maxlength="7" style="font-family:inherit;" onkeydown="if(event.key==='Enter')document.getElementById('loginPassword').focus()">
     </div>
     <div class="form-group">
       <label class="form-label form-label-required">登录密码</label>
@@ -1439,6 +1513,55 @@ async function fetchMerchants() {
 // ===== 多通道组 API =====
 let groups = [];
 
+// ===== 列表切换 & 分页状态 =====
+let currentListTab = 'merchant'; // 'merchant' | 'group'
+let merchantPage = 1;
+let groupPage = 1;
+const PAGE_SIZE = 10;
+
+function switchListTab(tab) {
+  currentListTab = tab;
+  document.querySelectorAll('.list-toggle').forEach(el => {
+    el.classList.toggle('active', el.dataset.list === tab);
+  });
+  const showMerchant = (tab === 'merchant');
+  document.getElementById('merchantSection').style.display = showMerchant ? '' : 'none';
+  document.getElementById('groupSection').style.display = showMerchant ? 'none' : '';
+  if (showMerchant) renderMerchants(); else renderGroups();
+}
+
+function getTotalPages(total) {
+  return Math.max(1, Math.ceil(total / PAGE_SIZE));
+}
+
+function renderPagination(barId, prevId, nextId, infoId, page, total) {
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+  const totalPages = getTotalPages(total);
+  if (total <= PAGE_SIZE) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = '';
+  document.getElementById(prevId).disabled = (page <= 1);
+  document.getElementById(nextId).disabled = (page >= totalPages);
+  document.getElementById(infoId).textContent = `${page}/${totalPages}`;
+}
+
+function changeMerchantPage(delta) {
+  const total = merchants.filter(m => !m.groupId).length;
+  const totalPages = getTotalPages(total);
+  merchantPage = Math.min(Math.max(1, merchantPage + delta), totalPages);
+  renderMerchants();
+}
+
+function changeGroupPage(delta) {
+  const total = (groups || []).length;
+  const totalPages = getTotalPages(total);
+  groupPage = Math.min(Math.max(1, groupPage + delta), totalPages);
+  renderGroups();
+}
+
 async function fetchGroups() {
   try {
     const res = await fetch('/api/groups', { headers: { 'Authorization': getToken() } });
@@ -1455,30 +1578,31 @@ async function fetchGroups() {
 }
 
 function renderGroups() {
-  const section = document.getElementById('groupSection');
   const body = document.getElementById('groupBody');
   const empty = document.getElementById('groupEmptyState');
   const table = document.getElementById('groupTable');
 
+  document.getElementById('groupCount').textContent = `共 ${(groups||[]).length} 个组`;
+
   if (!groups || groups.length === 0) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = '';
-
-  document.getElementById('groupCount').textContent = `共 ${groups.length} 个组`;
-
-  if (groups.length === 0) {
     body.innerHTML = '';
     empty.style.display = 'block';
     table.style.display = 'none';
+    document.getElementById('groupPaginationBar').style.display = 'none';
     return;
   }
+
+  // 分页校正
+  const totalPages = getTotalPages(groups.length);
+  if (groupPage > totalPages) groupPage = totalPages;
 
   empty.style.display = 'none';
   table.style.display = '';
 
-  body.innerHTML = groups.map(g => {
+  const start = (groupPage - 1) * PAGE_SIZE;
+  const pageItems = groups.slice(start, start + PAGE_SIZE);
+
+  body.innerHTML = pageItems.map(g => {
     const date = new Date(g.createdAt);
     const dateStr = `${date.getMonth()+1}/${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
     const cashierUrl = `${window.location.origin}/g/${g.id}/cashier.html`;
@@ -1494,7 +1618,7 @@ function renderGroups() {
     return `
       <tr>
         <td class="group-name-cell">${escapeHtml(g.name)}</td>
-        <td>${escapeHtml(g.phone || '')}</td>
+        <td style="font-weight:700;color:var(--gold);">${escapeHtml(g.loginAccount || '—')}</td>
         <td>${slotPills}</td>
         <td><a class="cashier-link" href="${cashierUrl}" target="_blank">收银台</a></td>
         <td><a class="cashier-link" href="${adminUrl}" target="_blank" style="color:var(--gold);">登录后台</a></td>
@@ -1509,6 +1633,8 @@ function renderGroups() {
       </tr>
     `;
   }).join('');
+
+  renderPagination('groupPaginationBar', 'groupPrevBtn', 'groupNextBtn', 'groupPageInfo', groupPage, groups.length);
 }
 
 let deleteGroupId = null;
@@ -1569,15 +1695,16 @@ async function openGroupDetail(id) {
       <div class="detail-value">${escapeHtml(g.name)}</div>
     </div>
     <div class="detail-item detail-full">
-      <div class="detail-label">商户名称（收银台显示）</div>
-      <div class="detail-value" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <input type="text" id="inputGroupMerchantName" class="form-input" value="${escapeHtml(g.merchantName || g.name || '')}" placeholder="默认与组名相同" style="flex:1;min-width:120px;font-family:inherit;">
-        <button class="btn btn-primary" id="btnSaveGroupMerchantName" onclick="saveGroupMerchantName('${g.id}')">保存</button>
-      </div>
+      <div class="detail-label">商户名称（收银台显示 · 不可修改）</div>
+      <div class="detail-value">${escapeHtml(g.merchantName || g.name || '—')}</div>
     </div>
     <div class="detail-item">
-      <div class="detail-label">登录手机号</div>
-      <div class="detail-value">${escapeHtml(g.phone || '')}</div>
+      <div class="detail-label">登录账号</div>
+      <div class="detail-value" style="color:var(--gold);font-weight:700;">${escapeHtml(g.loginAccount || '—')}</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">手机号</div>
+      <div class="detail-value">${escapeHtml(g.phone || '—')}</div>
     </div>
     <div class="detail-item">
       <div class="detail-label">组 ID</div>
@@ -1600,7 +1727,7 @@ async function openGroupDetail(id) {
       <div class="detail-value"><a class="cashier-link" href="${cashierUrl}" target="_blank">${cashierUrl}</a></div>
     </div>
     <div class="detail-item detail-full">
-      <div class="detail-label">管理后台（手机号 ${escapeHtml(g.phone || '')} 登录）</div>
+      <div class="detail-label">管理后台（登录账号 ${escapeHtml(g.loginAccount || '')} 登录）</div>
       <div class="detail-value"><a class="cashier-link" href="${window.location.origin}/g/${g.id}/admin.html" target="_blank" style="color:var(--gold);">${window.location.origin}/g/${g.id}/admin.html</a></div>
     </div>
     <div class="detail-full" style="margin-top:12px;">
@@ -1697,7 +1824,7 @@ async function saveGroupMerchantName(groupId) {
     // 刷新本地 groups 缓存
     const g = groups.find(x => x.id === groupId);
     if (g) g.merchantName = merchantName;
-    renderMerchantList();
+    renderGroups();
     showToast('商户名称已保存', 'success');
   } catch (e) {
     showToast(e.message || '保存失败', 'error');
@@ -1815,19 +1942,30 @@ function renderMerchants() {
   const empty = document.getElementById('emptyState');
   const table = document.getElementById('merchantTable');
 
-  if (merchants.length === 0) {
+  // 只显示单通道进件商户（无 groupId）
+  const singleMerchants = merchants.filter(m => !m.groupId);
+
+  if (singleMerchants.length === 0) {
     body.innerHTML = '';
     empty.style.display = 'block';
     table.style.display = 'none';
-    document.getElementById('merchantCount').textContent = '';
+    document.getElementById('merchantCount').textContent = '共 0 个商户';
+    document.getElementById('merchantPaginationBar').style.display = 'none';
     return;
   }
 
+  // 分页校正
+  const totalPages = getTotalPages(singleMerchants.length);
+  if (merchantPage > totalPages) merchantPage = totalPages;
+
   empty.style.display = 'none';
   table.style.display = '';
-  document.getElementById('merchantCount').textContent = `共 ${merchants.length} 个商户`;
+  document.getElementById('merchantCount').textContent = `共 ${singleMerchants.length} 个商户`;
 
-  body.innerHTML = merchants.map(m => {
+  const start = (merchantPage - 1) * PAGE_SIZE;
+  const pageItems = singleMerchants.slice(start, start + PAGE_SIZE);
+
+  body.innerHTML = pageItems.map(m => {
     const date = new Date(m.createdAt);
     const dateStr = `${date.getMonth()+1}/${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
     const keyClass = m.keyType === 'PKCS8' ? 'pkcs8' : 'pkcs1';
@@ -1843,13 +1981,13 @@ function renderMerchants() {
     const idLabel = (isUid || isUidSimple) ? maskString(m.alipayUid || '') : maskString(m.appId || '');
     const showKeyBadge = isFace || isFaceDynamic;
     const isEnabled = m.enabled !== false; // default true
-    const groupBadge = m.groupId ? `<span class="group-badge" title="多通道组: ${escapeHtml(m.groupName || m.groupId)}">组商户</span>` : '';
     return `
       <tr>
-        <td class="merchant-name">${escapeHtml(m.merchantName)}${groupBadge}</td>
+        <td class="merchant-name">${escapeHtml(m.merchantName)}</td>
         <td><span class="type-badge ${typeBadgeClass}">${typeLabel}</span></td>
         <td class="merchant-appid">${escapeHtml(idLabel)}</td>
-        <td class="merchant-phone">${escapeHtml(m.phone || '')}</td>
+        <td class="merchant-login" style="font-weight:700;color:var(--gold);">${escapeHtml(m.loginAccount || '—')}</td>
+        <td class="merchant-phone">${escapeHtml(m.phone || '—')}</td>
         <td>${showKeyBadge ? `<span class="key-badge ${keyClass}">${m.keyType}</span>` : '<span style="color:var(--text-dim);font-size:12px;">—</span>'}</td>
         <td class="merchant-date">${dateStr}</td>
         <td><label class="merchant-toggle"><input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleMerchantEnabled('${m.id}', this.checked)"><span class="toggle-slider"></span></label></td>
@@ -1863,6 +2001,8 @@ function renderMerchants() {
       </tr>
     `;
   }).join('');
+
+  renderPagination('merchantPaginationBar', 'merchantPrevBtn', 'merchantNextBtn', 'merchantPageInfo', merchantPage, singleMerchants.length);
 }
 
 function renderStats() {
@@ -2182,7 +2322,7 @@ async function submitGroup() {
   const groupName = document.getElementById('inputGroupName').value.trim();
   const groupPhone = document.getElementById('inputGroupPhone').value.trim();
   if (!groupName) return showToast('请输入多通道组名称', 'error');
-  if (!/^1\d{10}$/.test(groupPhone)) return showToast('请输入有效的 11 位登录手机号', 'error');
+  if (groupPhone && !/^1\d{10}$/.test(groupPhone)) return showToast('手机号格式不正确（或留空）', 'error');
   if (groupSlots.length < 2) return showToast('至少需要 2 个槽位商户', 'error');
 
   // 校验每个 slot（已有商户的跳过）
@@ -2253,7 +2393,7 @@ async function submitFaceMerchant() {
   const keyType = document.getElementById('inputKeyType').value;
 
   if (!merchantName) return showToast('请填写支付宝商户名', 'error');
-  if (!validatePhone(phone)) return showToast('请输入有效的 11 位手机号', 'error');
+  if (phone && !validatePhone(phone)) return showToast('手机号格式不正确（或留空）', 'error');
   if (!appId) return showToast('请填写 APPID', 'error');
   if (!privateKey) return showToast('请填写应用私钥', 'error');
   if (!alipayPublicKey) return showToast('请填写支付宝公钥', 'error');
@@ -2293,7 +2433,7 @@ async function submitUidMerchant() {
   const phone = document.getElementById('inputUidPhone').value.trim();
   const alipayUid = document.getElementById('inputAlipayUid').value.trim();
 
-  if (!validatePhone(phone)) return showToast('请输入有效的 11 位手机号', 'error');
+  if (phone && !validatePhone(phone)) return showToast('手机号格式不正确（或留空）', 'error');
   if (!alipayUid) return showToast('请填写支付宝 UID', 'error');
   if (!/^\d{16}$/.test(alipayUid)) return showToast('支付宝 UID 应为 16 位数字', 'error');
   if (!alipayUid.startsWith('2088')) return showToast('支付宝 UID 应以 2088 开头', 'error');
@@ -2499,7 +2639,8 @@ async function openMerchantDetail(id) {
         <div class="detail-value">${escapeHtml(d.merchantName)}</div>
       </div>
       <div class="detail-item"><div class="detail-label">进件类型</div><div class="detail-value">${typeDisplay}</div></div>
-      <div class="detail-item"><div class="detail-label">手机号</div><div class="detail-value">${escapeHtml(d.phone || '')}</div></div>
+      <div class="detail-item"><div class="detail-label">登录账号</div><div class="detail-value" style="color:var(--gold);font-weight:700;">${escapeHtml(d.loginAccount || '—')}</div></div>
+      <div class="detail-item"><div class="detail-label">手机号</div><div class="detail-value">${escapeHtml(d.phone || '—')}</div></div>
       <div class="detail-item"><div class="detail-label">默认登录密码</div><div class="detail-value">yy123456</div></div>
       <div class="detail-item"><div class="detail-label">文件名</div><div class="detail-value">${escapeHtml(d.fileName)}</div></div>
       <div class="detail-item"><div class="detail-label">创建时间</div><div class="detail-value">${new Date(d.createdAt).toLocaleString()}</div></div>
@@ -2509,27 +2650,6 @@ async function openMerchantDetail(id) {
         <span>${escapeHtml(d.alipayUid || '')}</span>
         <button class="btn-submit" style="font-size:12px;padding:4px 12px;" onclick="openUidEditModal('${d.id}')">修改 UID</button>
       </div></div>`;
-      // UID商户支付宝凭证（可选配置，用于启用自动确认到账）
-      html += `
-        <div class="detail-item detail-full" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px;">
-          <div class="detail-label" style="color:var(--gold);">⚡ 支付宝应用凭证（可选）</div>
-          <div class="detail-value" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">
-            ${d.appId ? '✅ 已配置 — 订单可自动确认到账' : '⚠️ 未配置 — 订单需手动确认到账。配置后系统使用当面付 API 创建交易订单，自动检测支付结果。'}
-          </div>
-          ${d.appId ? `
-            <div class="detail-item"><div class="detail-label">APPID</div><div class="detail-value">${escapeHtml(d.appId)}</div></div>
-            <div class="detail-item"><div class="detail-label">私钥格式</div><div class="detail-value">${escapeHtml(d.keyType || '未设置')}</div></div>
-            <div class="detail-item detail-full"><div class="detail-label">应用私钥</div><div class="detail-value">${escapeHtml(maskPrivateKey(d.privateKey))}</div></div>
-            <div class="detail-item detail-full"><div class="detail-label">支付宝公钥</div><div class="detail-value">${escapeHtml(maskPrivateKey(d.alipayPublicKey))}</div></div>
-            <div style="margin-top:8px;display:flex;gap:8px;">
-              <button class="btn-submit" style="font-size:12px;padding:4px 12px;" onclick="openUidSdkModal('${d.id}')">修改凭证</button>
-              <button style="font-size:12px;padding:4px 12px;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer;" onclick="clearUidSdk('${d.id}')">移除凭证</button>
-            </div>
-          ` : `
-            <button class="btn-submit" style="font-size:12px;padding:6px 16px;margin-top:4px;" onclick="openUidSdkModal('${d.id}')">⚙️ 配置支付宝凭证</button>
-          `}
-        </div>
-      `;
     } else {
       html += `
         <div class="detail-item"><div class="detail-label">APPID</div><div class="detail-value">${escapeHtml(d.appId || '')}</div></div>
@@ -2761,7 +2881,7 @@ function openMerchantLogin(id) {
   loginMerchantId = id;
   const m = merchants.find(x => x.id === id);
   if (!m) return;
-  document.getElementById('loginPhone').value = m.phone || '';
+  document.getElementById('loginPhone').value = m.loginAccount || '';
   document.getElementById('loginPassword').value = '';
   document.getElementById('loginError').textContent = '';
   document.getElementById('merchantLoginModal').classList.add('show');
@@ -2782,12 +2902,12 @@ function openMerchantLoginUrl() {
 async function submitMerchantLogin() {
   const m = merchants.find(x => x.id === loginMerchantId);
   if (!m) return;
-  const phone = document.getElementById('loginPhone').value.trim();
+  const loginAccount = document.getElementById('loginPhone').value.trim();
   const password = document.getElementById('loginPassword').value;
   const err = document.getElementById('loginError');
   const btn = document.getElementById('btnMerchantLogin');
 
-  if (!phone) return err.textContent = '请输入手机号';
+  if (!loginAccount) return err.textContent = '请输入登录账号';
   if (!password) return err.textContent = '请输入密码';
 
   btn.disabled = true;
@@ -2798,7 +2918,7 @@ async function submitMerchantLogin() {
     const res = await fetch(`/m/${loginMerchantId}/api/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, password })
+      body: JSON.stringify({ loginAccount, password })
     });
     const json = await res.json();
     if (json.code === 'OK') {

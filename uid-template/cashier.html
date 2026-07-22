@@ -1241,6 +1241,23 @@ function downloadQR() {
   document.body.removeChild(a);
 }
 
+// ==================== 报告支付完成（通知服务器用户已从支付宝返回）====================
+function reportPaid(orderNo) {
+  if (!orderNo) return;
+  fetch(API_BASE + 'cashier/report-paid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ outTradeNo: orderNo })
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.status === 'paid') {
+        showSuccess({ trade_no: data.trade_no, payer: data.payer });
+      }
+    })
+    .catch(() => {});
+}
+
 // ==================== 轮询支付状态 ====================
 function startPolling() {
   if (pollingTimer) clearInterval(pollingTimer);
@@ -1647,7 +1664,7 @@ document.querySelector('.amount-input-wrap').addEventListener('click', function(
   updateAmountInputWidth();
 });
 
-// 监听从支付宝转账页返回：若已支付成功，显示确认到账提示页，由用户手动关闭 WebView
+// 监听从支付宝转账页返回：通知服务器用户已返回，再查询订单状态
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState !== 'visible') return;
   if (paymentConfirmed) {
@@ -1655,12 +1672,14 @@ document.addEventListener('visibilitychange', function() {
     return;
   }
   if (waitingAlipayReturn && currentOutTradeNo) {
-    fetch(`${API_BASE}cashier/check?out_trade_no=${currentOutTradeNo}`)
+    // 先通知服务器：用户已从支付宝返回，可能已完成支付
+    reportPaid(currentOutTradeNo);
+    // 然后查询订单状态（report-paid 后端处理需要一点时间，下次轮询也能拿到结果）
+    fetch(API_BASE + 'cashier/check?out_trade_no=' + currentOutTradeNo)
       .then(res => res.json())
       .then(data => {
         if (data.status === 'paid') {
-          paymentConfirmed = true;
-          showPaidConfirmPage();
+          showSuccess({ trade_no: data.trade_no, payer: data.payer });
         }
       })
       .catch(() => {});

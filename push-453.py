@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Purple 项目 API 推送 - 通过 GitHub REST API 推送代码"""
+"""Purple 项目 API 推送 - 推送到 453246634/Purple 备用仓库"""
 import json, os, sys, base64, urllib.request, urllib.error, ssl, socket
 
-OWNER = "hgp61"
+OWNER = "453246634"
 REPO = "Purple"
 BRANCH = "main"
 WORKDIR = os.path.dirname(os.path.abspath(__file__))
 API = f"https://api.github.com/repos/{OWNER}/{REPO}"
 
-# Token from env var or local .token file (hgp61 token)
+# Token from env var or local .token_453 file (453246634 token)
 TOKEN = os.environ.get("GITHUB_TOKEN")
 if not TOKEN:
-    token_file = os.path.join(WORKDIR, ".token")
+    token_file = os.path.join(WORKDIR, ".token_453")
     if os.path.exists(token_file):
         with open(token_file) as f:
             TOKEN = f.read().strip()
 if not TOKEN:
-    print("Error: Set GITHUB_TOKEN env var or create .token file", flush=True)
+    print("Error: Set GITHUB_TOKEN env var or create .token_453 file", flush=True)
     sys.exit(1)
 
 ctx = ssl.create_default_context()
@@ -53,7 +53,7 @@ def api(method, path, data=None):
 def main():
     os.chdir(WORKDIR)
     msg = sys.argv[1] if len(sys.argv) > 1 else "更新代码"
-    print(f"=== Purple API Push ===", flush=True)
+    print(f"=== Push to 453246634/Purple ===", flush=True)
     print(f"Message: {msg}", flush=True)
 
     # 1. Get remote ref
@@ -64,9 +64,9 @@ def main():
     base_tree = commit["tree"]["sha"]
     print(f"  Parent: {parent_sha[:10]}", flush=True)
 
-    # 2. Get local file list (os.walk, 排除 node_modules/data/.git/.token 等)
+    # 2. Get local file list (os.walk, 排除 node_modules/data/.git/token 等)
     EXCLUDE_DIRS = {'node_modules', 'data', '.git', '__pycache__'}
-    EXCLUDE_FILES = {'.token', '.DS_Store', 'package-lock.json'}
+    EXCLUDE_FILES = {'.token', '.token_453', '.DS_Store', 'package-lock.json'}
     files = []
     for root, dirs, filenames in os.walk(WORKDIR):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]

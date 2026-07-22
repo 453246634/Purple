@@ -40,7 +40,12 @@ async function connectDb() {
   if (!DATABASE_URL) return null;
   try {
     const { Pool } = require('pg');
-    const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    const pool = new Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      // 强制客户端编码为 UTF8，避免 Railway PostgreSQL 默认编码非 UTF8 导致中文乱码
+      options: '-c client_encoding=UTF8'
+    });
     await pool.query('SELECT 1');
     console.log('[DB] PostgreSQL 连接成功');
     return pool;
@@ -73,6 +78,7 @@ async function createTables(pool) {
       group_slot INTEGER,
       product_type VARCHAR(128),
       cashier_title VARCHAR(128),
+      login_account VARCHAR(16),
       created_at TIMESTAMP
     );`);
 
@@ -81,6 +87,7 @@ async function createTables(pool) {
   try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS group_slot INTEGER'); } catch (e) {}
   try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS product_type VARCHAR(128)'); } catch (e) {}
   try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cashier_title VARCHAR(128)'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS login_account VARCHAR(16)'); } catch (e) {}
 
 
   await pool.query(`
@@ -95,6 +102,7 @@ async function createTables(pool) {
       name VARCHAR(128),
       phone VARCHAR(16),
       merchants JSONB NOT NULL,
+      login_account VARCHAR(16),
       created_at TIMESTAMP,
       next_index INTEGER DEFAULT 0,
       round_count INTEGER DEFAULT 0
@@ -111,6 +119,7 @@ async function createTables(pool) {
   try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS merchant_contact VARCHAR(128)'); } catch (e) {}
   try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS name VARCHAR(128)'); } catch (e) {}
   try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP'); } catch (e) {}
+  try { await pool.query('ALTER TABLE merchant_groups ADD COLUMN IF NOT EXISTS login_account VARCHAR(16)'); } catch (e) {}
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS merchant_json_data (
@@ -150,6 +159,7 @@ async function restoreFromDb(pool) {
         groupSlot: r.group_slot,
         productType: r.product_type,
         cashierTitle: r.cashier_title,
+        loginAccount: r.login_account,
         createdAt: r.created_at
       }));
       fs.writeFileSync(MERCHANTS_FILE, JSON.stringify(merchants, null, 2), 'utf-8');
@@ -212,6 +222,7 @@ async function restoreFromDb(pool) {
         createdAt: r.created_at,
         nextIndex: r.next_index || 0,
         roundCount: r.round_count || 0,
+        loginAccount: r.login_account,
       }));
       fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf-8');
       console.log('[DB] 已恢复', groups.length, '个多通道组');
@@ -247,8 +258,8 @@ async function syncMerchantsToDb(pool, list) {
     await client.query('DELETE FROM merchants');
     for (const m of list) {
       await client.query(
-        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, group_id, group_slot, product_type, cashier_title, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+        `INSERT INTO merchants (id, type, merchant_name, phone, password, alipay_uid, file_name, app_id, private_key, alipay_public_key, key_type, merchant_url, enabled, mgr_min_amount, mgr_max_amount, zip_generated, group_id, group_slot, product_type, cashier_title, login_account, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
          ON CONFLICT (id) DO UPDATE SET
            type=EXCLUDED.type, merchant_name=EXCLUDED.merchant_name, phone=EXCLUDED.phone,
            password=EXCLUDED.password, alipay_uid=EXCLUDED.alipay_uid, file_name=EXCLUDED.file_name,
@@ -256,13 +267,13 @@ async function syncMerchantsToDb(pool, list) {
            key_type=EXCLUDED.key_type, merchant_url=EXCLUDED.merchant_url, enabled=EXCLUDED.enabled,
            mgr_min_amount=EXCLUDED.mgr_min_amount, mgr_max_amount=EXCLUDED.mgr_max_amount,
            zip_generated=EXCLUDED.zip_generated, group_id=EXCLUDED.group_id, group_slot=EXCLUDED.group_slot,
-           product_type=EXCLUDED.product_type, cashier_title=EXCLUDED.cashier_title, created_at=EXCLUDED.created_at`,
+           product_type=EXCLUDED.product_type, cashier_title=EXCLUDED.cashier_title, login_account=EXCLUDED.login_account, created_at=EXCLUDED.created_at`,
         [m.id, m.type, m.merchantName || null, m.phone || null, m.password || null,
          m.alipayUid || null, m.fileName || null, m.appId || null, m.privateKey || null,
          m.alipayPublicKey || null, m.keyType || null, m.merchantUrl || null,
          m.enabled !== false, m.mgrMinAmount || null, m.mgrMaxAmount || null,
          m.zipGenerated || false, m.groupId || null, m.groupSlot !== undefined ? m.groupSlot : null,
-         m.productType || null, m.cashierTitle || null, m.createdAt || null]
+         m.productType || null, m.cashierTitle || null, m.loginAccount || null, m.createdAt || null]
       );
     }
     await client.query('COMMIT');
@@ -297,13 +308,13 @@ async function syncGroupsToDb(pool, list) {
     await client.query('DELETE FROM merchant_groups');
     for (const g of list) {
       await client.query(
-        `INSERT INTO merchant_groups (id, name, merchant_name, merchant_contact, phone, merchants, created_at, next_index, round_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO merchant_groups (id, name, merchant_name, merchant_contact, phone, merchants, login_account, created_at, next_index, round_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (id) DO UPDATE SET
            name=EXCLUDED.name, merchant_name=EXCLUDED.merchant_name, merchant_contact=EXCLUDED.merchant_contact, phone=EXCLUDED.phone,
-           merchants=EXCLUDED.merchants, created_at=EXCLUDED.created_at, next_index=EXCLUDED.next_index, round_count=EXCLUDED.round_count`,
+           merchants=EXCLUDED.merchants, login_account=EXCLUDED.login_account, created_at=EXCLUDED.created_at, next_index=EXCLUDED.next_index, round_count=EXCLUDED.round_count`,
         [g.id, g.name || null, g.merchantName || null, g.merchantContact || null, g.phone || null, JSON.stringify(g.merchants || []),
-         g.createdAt || null, g.nextIndex || 0, g.roundCount || 0]
+         g.loginAccount || null, g.createdAt || null, g.nextIndex || 0, g.roundCount || 0]
       );
     }
     await client.query('COMMIT');
@@ -1137,6 +1148,60 @@ function genFileName() {
   return `${adj}-${noun}-${num}`;
 }
 
+// 生成 7 位数字登录账号（确保在所有商户和组中唯一）
+function genLoginAccount(existingSet) {
+  let used = existingSet;
+  if (!used) {
+    used = new Set();
+    try {
+      for (const m of loadMerchants()) if (m.loginAccount) used.add(m.loginAccount);
+      for (const g of loadGroups()) if (g.loginAccount) used.add(g.loginAccount);
+    } catch (e) { /* 忽略读取失败 */ }
+  }
+  let acct;
+  let attempts = 0;
+  do {
+    acct = String(Math.floor(1000000 + Math.random() * 9000000));
+    attempts++;
+  } while (used.has(acct) && attempts < 100);
+  return acct;
+}
+
+// 启动时为缺少 loginAccount 的商户/组补充生成（兼容旧数据）
+function ensureLoginAccounts() {
+  const list = loadMerchants();
+  const groups = loadGroups();
+  const used = new Set();
+  for (const m of list) if (m.loginAccount) used.add(m.loginAccount);
+  for (const g of groups) if (g.loginAccount) used.add(g.loginAccount);
+
+  let mChanged = false;
+  for (const m of list) {
+    if (!m.loginAccount) {
+      m.loginAccount = genLoginAccount(used);
+      used.add(m.loginAccount);
+      mChanged = true;
+    }
+  }
+  if (mChanged) {
+    saveMerchants(list);
+    console.log('[登录账号] 已为商户补充生成登录账号');
+  }
+
+  let gChanged = false;
+  for (const g of groups) {
+    if (!g.loginAccount) {
+      g.loginAccount = genLoginAccount(used);
+      used.add(g.loginAccount);
+      gChanged = true;
+    }
+  }
+  if (gChanged) {
+    saveGroups(groups).catch(err => console.error('[DB] 补充组登录账号失败:', err.message));
+    console.log('[登录账号] 已为多通道组补充生成登录账号');
+  }
+}
+
 function hashPwd(pwd) {
   return crypto.createHash('sha256').update('zima_admin_' + pwd + '_2024').digest('hex');
 }
@@ -1358,8 +1423,9 @@ app.get('/api/stats', requireAuth, (req, res) => {
 app.post('/api/merchants', requireAuth, (req, res) => {
   const { merchantName, phone, appId, privateKey, alipayPublicKey, keyType: reqKeyType, type: reqType } = req.body;
   const faceType = reqType === 'face2face-dynamic' ? 'face2face-dynamic' : 'face2face';
-  if (!phone || !/^1\d{10}$/.test(phone.trim())) {
-    return res.json({ code: 'FAIL', message: '请输入有效的 11 位手机号' });
+  const trimmedPhone = phone ? phone.trim() : '';
+  if (trimmedPhone && !/^1\d{10}$/.test(trimmedPhone)) {
+    return res.json({ code: 'FAIL', message: '请输入有效的 11 位手机号（或留空）' });
   }
   if (!appId || !privateKey || !alipayPublicKey) {
     return res.json({ code: 'FAIL', message: '请填写完整的支付宝配置信息' });
@@ -1403,6 +1469,7 @@ app.post('/api/merchants', requireAuth, (req, res) => {
 
   const id = genId();
   const fileName = genFileName();
+  const loginAccount = genLoginAccount();
   const now = new Date().toISOString();
   const defaultPassword = 'yy123456';
   const alipayMerchantName = (merchantName || '').trim();
@@ -1410,7 +1477,8 @@ app.post('/api/merchants', requireAuth, (req, res) => {
   const merchant = {
     id, type: faceType,
     merchantName: merchantName || '未命名商户',
-    phone: phone.trim(),
+    phone: trimmedPhone,
+    loginAccount,
     password: hashPwd(defaultPassword),
     appId, privateKey: trimmedKey,
     alipayPublicKey: alipayPublicKey.trim(),
@@ -1425,7 +1493,7 @@ app.post('/api/merchants', requireAuth, (req, res) => {
       privateKey: trimmedKey,
       alipayPublicKey: alipayPublicKey.trim(),
       merchantName: alipayMerchantName,
-      merchantPhone: phone.trim(),
+      merchantPhone: trimmedPhone,
       merchantPassword: defaultPassword,
       merchantType: faceType,
     };
@@ -1452,8 +1520,9 @@ app.post('/api/merchants', requireAuth, (req, res) => {
 app.post('/api/merchants/uid', requireAuth, (req, res) => {
   const { merchantName, phone, alipayUid, type } = req.body;
   const merchantType = type === 'uid-simple' ? 'uid-simple' : 'uid';
-  if (!phone || !/^1\d{10}$/.test(phone.trim())) {
-    return res.json({ code: 'FAIL', message: '请输入有效的 11 位手机号' });
+  const trimmedPhone = phone ? phone.trim() : '';
+  if (trimmedPhone && !/^1\d{10}$/.test(trimmedPhone)) {
+    return res.json({ code: 'FAIL', message: '请输入有效的 11 位手机号（或留空）' });
   }
   if (!alipayUid || !alipayUid.trim()) {
     return res.json({ code: 'FAIL', message: '请填写支付宝 UID' });
@@ -1468,13 +1537,15 @@ app.post('/api/merchants/uid', requireAuth, (req, res) => {
 
   const id = genId();
   const fileName = genFileName();
+  const loginAccount = genLoginAccount();
   const now = new Date().toISOString();
   const defaultPassword = 'yy123456';
 
   const merchant = {
     id, type: merchantType,
     merchantName: merchantName || (merchantType === 'uid-simple' ? 'UID简易商户' : 'UID商户'),
-    phone: phone.trim(),
+    phone: trimmedPhone,
+    loginAccount,
     password: hashPwd(defaultPassword),
     alipayUid: uid,
     fileName,
@@ -1487,7 +1558,7 @@ app.post('/api/merchants/uid', requireAuth, (req, res) => {
       alipayUid: uid,
       merchantName: merchantName || '',
       merchantContact: merchantName || '',
-      merchantPhone: phone.trim(),
+      merchantPhone: trimmedPhone,
       merchantPassword: defaultPassword,
       type: merchantType,
     });
@@ -1768,7 +1839,7 @@ app.post('/api/groups', requireAuth, (req, res) => {
   const groupPhone = (req.body.phone || '').trim();
   const slots = Array.isArray(req.body.slots) ? req.body.slots : [];
   if (!groupName) return res.json({ code: 'FAIL', message: '请输入多通道组名称' });
-  if (!/^1\d{10}$/.test(groupPhone)) return res.json({ code: 'FAIL', message: '请输入有效的 11 位登录手机号' });
+  if (groupPhone && !/^1\d{10}$/.test(groupPhone)) return res.json({ code: 'FAIL', message: '请输入有效的 11 位手机号（或留空）' });
   if (slots.length < 2) return res.json({ code: 'FAIL', message: '多通道进件至少需要 2 个商户' });
 
   // 校验 + 规范化（existingMerchantId 的 slot 不经过 buildGroupSlot）
@@ -1796,6 +1867,10 @@ app.post('/api/groups', requireAuth, (req, res) => {
   const groupId = genGroupId();
   const now = new Date().toISOString();
   const subMerchants = [];
+  // 预构建已用登录账号集合（循环中生成 loginAccount 时避免重复）
+  const usedLoginAccounts = new Set();
+  for (const m of merchantList) if (m.loginAccount) usedLoginAccounts.add(m.loginAccount);
+  for (const g of loadGroups()) if (g.loginAccount) usedLoginAccounts.add(g.loginAccount);
   for (let i = 0; i < built.length; i++) {
     const slot = built[i];
 
@@ -1808,12 +1883,15 @@ app.post('/api/groups', requireAuth, (req, res) => {
       // 克隆为新商户实体（保留原商户 phone/password 不被覆盖，且允许同一商户加入多个组）
       const cloneId = genId();
       const cloneFname = genFileName();
+      const cloneLoginAccount = genLoginAccount(usedLoginAccounts);
+      usedLoginAccounts.add(cloneLoginAccount);
       const baseName = (existing.merchantName || groupName).replace(/\s*·槽\d+$/, '');
       const cloned = {
         id: cloneId,
         type: existing.type,
         merchantName: baseName + '·槽' + (i + 1),
         phone: existing.phone,           // 保留原商户手机号，不替换为组手机号
+        loginAccount: cloneLoginAccount,
         password: existing.password,     // 保留原商户密码
         fileName: cloneFname,
         createdAt: now,
@@ -1840,11 +1918,14 @@ app.post('/api/groups', requireAuth, (req, res) => {
 
     const mid = genId();
     const fname = genFileName();
+    const slotLoginAccount = genLoginAccount(usedLoginAccounts);
+    usedLoginAccounts.add(slotLoginAccount);
     const merchant = {
       id: mid,
       type: slot.type,
       merchantName: slot.merchantName + '·槽' + (i + 1),
       phone: slot.phone,
+      loginAccount: slotLoginAccount,
       password: slot.password,
       fileName: fname,
       createdAt: now,
@@ -1894,11 +1975,13 @@ app.post('/api/groups', requireAuth, (req, res) => {
   saveMerchants(merchantList);
 
   // 创建 group
+  const groupLoginAccount = genLoginAccount(usedLoginAccounts);
   const group = {
     id: groupId,
     name: groupName,
     merchantName: groupName, // 默认商户显示名称为组名，后续可在详情中独立修改
     phone: groupPhone,
+    loginAccount: groupLoginAccount,
     merchants: subMerchants.map(m => ({
       id: m.id, slotIndex: m.groupSlot, type: m.type,
       merchantName: m.merchantName, phone: m.phone, enabled: m.enabled !== false,
@@ -2266,22 +2349,22 @@ app.get('/g/:groupId/api/config', (req, res) => {
   });
 });
 
-// 组级登录（用组手机号 + 默认密码 yy123456）
+// 组级登录（用组登录账号 + 默认密码 yy123456）
 app.post('/g/:groupId/api/login', express.json(), (req, res) => {
-  const { phone, password } = req.body;
-  const groupPhone = (req.group.phone || '').trim();
-  if (!phone || phone.trim() !== groupPhone) {
-    return res.status(400).json({ code: 'FAIL', message: '手机号或密码错误' });
+  const { loginAccount, password } = req.body;
+  const groupAccount = (req.group.loginAccount || '').trim();
+  if (!loginAccount || loginAccount.trim() !== groupAccount) {
+    return res.status(400).json({ code: 'FAIL', message: '登录账号或密码错误' });
   }
   if (!password || password !== 'yy123456') {
-    return res.status(400).json({ code: 'FAIL', message: '手机号或密码错误' });
+    return res.status(400).json({ code: 'FAIL', message: '登录账号或密码错误' });
   }
   const token = crypto.randomBytes(16).toString('hex');
   // 使用第一个可用 slot 的 runtime 来存储 session
   const first = (req.groupMerchants || []).find(s => s._merchant && s._runtime);
   if (first && first._runtime) {
     first._runtime.sessions = first._runtime.sessions || new Map();
-    first._runtime.sessions.set(token, { createdAt: Date.now() });
+    first._runtime.sessions.set(token, { createdAt: Date.now(), loginAccount: groupAccount, phone: (req.group.phone || '').trim() });
   }
   res.json({ code: 'OK', token, message: '登录成功' });
 });
@@ -2300,18 +2383,19 @@ app.post('/g/:groupId/api/login/check', express.json(), (req, res) => {
 
 // 组级管理员免密登录 — 商户管理系统调用，无需密码
 app.post('/g/:groupId/api/login/admin', express.json(), (req, res) => {
-  const groupPhone = (req.group.phone || '').trim();
+  const groupAccount = (req.group.loginAccount || '').trim();
   const token = crypto.randomBytes(24).toString('hex');
   const first = (req.groupMerchants || []).find(s => s._merchant && s._runtime);
   if (first && first._runtime) {
     first._runtime.sessions = first._runtime.sessions || new Map();
     first._runtime.sessions.set(token, {
       createdAt: Date.now(),
-      phone: groupPhone,
+      loginAccount: groupAccount,
+      phone: (req.group.phone || '').trim(),
       isAdmin: true,
     });
   }
-  console.log(`[组 ${req.group.id}] 管理员免密登录 (phone=${groupPhone})`);
+  console.log(`[组 ${req.group.id}] 管理员免密登录 (loginAccount=${groupAccount})`);
   return res.json({ code: 'OK', token, message: '管理员直接登录' });
 });
 
@@ -2733,20 +2817,20 @@ app.use('/m/:id', (req, res, next) => {
 // ===== 商户登录 API =====
 
 app.post('/m/:id/api/login', express.json(), (req, res) => {
-  const { phone, password } = req.body;
+  const { loginAccount, password } = req.body;
   const rt = req.runtime;
   const m = req.merchant;
 
-  if (!phone || !/^1\d{10}$/.test(phone.trim())) {
-    return res.status(400).json({ code: 'FAIL', message: '请输入有效的 11 位手机号' });
+  if (!loginAccount) {
+    return res.status(400).json({ code: 'FAIL', message: '请输入登录账号' });
   }
   if (!password) {
     return res.status(400).json({ code: 'FAIL', message: '请输入登录密码' });
   }
 
-  const configPhone = (m.phone || '').trim();
-  if (phone.trim() !== configPhone && !rt.allowedPhones.has(phone.trim())) {
-    return res.status(400).json({ code: 'FAIL', message: '手机号或密码错误' });
+  const configAccount = (m.loginAccount || '').trim();
+  if (!configAccount || loginAccount.trim() !== configAccount) {
+    return res.status(400).json({ code: 'FAIL', message: '登录账号或密码错误' });
   }
 
   // 先检查是否已通过安全设置修改过密码
@@ -2756,16 +2840,16 @@ app.post('/m/:id/api/login', express.json(), (req, res) => {
     const hashFn = m.type === 'uid' ? hashMerchantPwdUid : hashMerchantPwd;
     if (password === storedPwd || hashFn(password) === hashFn(storedPwd)) {
       const token = crypto.randomBytes(16).toString('hex');
-      rt.sessions.set(token, { createdAt: Date.now(), phone: phone.trim() });
+      rt.sessions.set(token, { createdAt: Date.now(), loginAccount: loginAccount.trim(), phone: (m.phone || '').trim() });
       return res.json({ code: 'OK', token, message: '登录成功' });
     }
-    return res.status(400).json({ code: 'FAIL', message: '手机号或密码错误' });
+    return res.status(400).json({ code: 'FAIL', message: '登录账号或密码错误' });
   }
 
   // 尚未修改过密码，接受默认密码 yy123456
   if (password === 'yy123456') {
     const token = crypto.randomBytes(16).toString('hex');
-    rt.sessions.set(token, { createdAt: Date.now(), phone: phone.trim() });
+    rt.sessions.set(token, { createdAt: Date.now(), loginAccount: loginAccount.trim(), phone: (m.phone || '').trim() });
     return res.json({ code: 'OK', token, message: '登录成功' });
   }
 
@@ -2773,25 +2857,26 @@ app.post('/m/:id/api/login', express.json(), (req, res) => {
   const inputHash = hashFn(password);
   if (inputHash === hashFn('yy123456')) {
     const token = crypto.randomBytes(16).toString('hex');
-    rt.sessions.set(token, { createdAt: Date.now(), phone: phone.trim() });
+    rt.sessions.set(token, { createdAt: Date.now(), loginAccount: loginAccount.trim(), phone: (m.phone || '').trim() });
     return res.json({ code: 'OK', token, message: '登录成功' });
   }
 
-  return res.status(400).json({ code: 'FAIL', message: '手机号或密码错误' });
+  return res.status(400).json({ code: 'FAIL', message: '登录账号或密码错误' });
 });
 
 // 管理员免密直接登录 — 商户管理系统调用，无需密码
 app.post('/m/:id/api/login/admin', (req, res) => {
   const rt = req.runtime;
   const m = req.merchant;
-  const phone = (m.phone || '').trim();
+  const loginAccount = (m.loginAccount || '').trim();
   const token = crypto.randomBytes(24).toString('hex');
   rt.sessions.set(token, {
     createdAt: Date.now(),
-    phone,
+    loginAccount,
+    phone: (m.phone || '').trim(),
     isAdmin: true,
   });
-  console.log(`[${m.id}] 管理员免密登录 (phone=${phone})`);
+  console.log(`[${m.id}] 管理员免密登录 (loginAccount=${loginAccount})`);
   return res.json({ code: 'OK', token, message: '管理员直接登录' });
 });
 
@@ -3254,14 +3339,30 @@ app.post('/m/:id/cashier/report-paid', express.json(), async (req, res) => {
 
   // 标记为"待确认到账"（用户已从支付宝返回，可能已完成支付）
   if (['generated', 'paying', 'waiting'].includes(order.status)) {
-    order.status = 'pending_confirm';
     order.reportedAt = new Date().toISOString();
-    saveMerchantFile(m.id, 'orders', rt.orders);
-    console.log(`>>> [UID] 用户报告支付完成（待确认）: ${outTradeNo}, 金额: ¥${order.amount}`);
 
-    // 如果商户有支付宝SDK，启动自动确认（交易查询+账单兜底）
-    if (rt.alipaySdk) {
-      startAutoConfirm(m.id, rt, order);
+    // UID 商户未配置支付宝 SDK：用户报告支付完成后直接标记为已到账，
+    // 后台通过轮询实时查看，无需应用凭证。
+    if (!rt.alipaySdk) {
+      order.status = 'paid';
+      order.paidAt = new Date().toISOString();
+      order.tradeNo = 'USER_REPORT_' + Date.now();
+      order.autoConfirmed = true;
+      order.confirmMethod = 'user_report';
+      const cOrder = rt.cashierOrders.get(outTradeNo) || {};
+      cOrder.status = 'paid';
+      cOrder.tradeNo = order.tradeNo;
+      rt.cashierOrders.set(outTradeNo, cOrder);
+      saveMerchantFile(m.id, 'orders', rt.orders);
+      console.log(`>>> [UID] 用户报告支付完成（已自动到账）: ${outTradeNo}, 金额: ¥${order.amount}`);
+    } else {
+      order.status = 'pending_confirm';
+      saveMerchantFile(m.id, 'orders', rt.orders);
+      console.log(`>>> [UID] 用户报告支付完成（待确认）: ${outTradeNo}, 金额: ¥${order.amount}`);
+      // 如果商户有支付宝SDK，启动自动确认（交易查询+账单兜底）
+      if (rt.alipaySdk) {
+        startAutoConfirm(m.id, rt, order);
+      }
     }
   }
 
@@ -3572,6 +3673,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 async function start() {
   await initDb();
   adminConfig = loadAdminConfig();
+
+  // 为旧数据补充生成登录账号（loginAccount）
+  ensureLoginAccounts();
 
   // 预加载所有已有商户的运行时（在 initDb 恢复数据后执行）
   const existingMerchants = loadMerchants();

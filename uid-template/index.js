@@ -1008,13 +1008,31 @@ app.post('/cashier/report-paid', express.json(), async (req, res) => {
 
   // 标记为"待确认到账"（用户已从支付宝返回，可能已完成支付）
   if (order.status === 'generated' || order.status === 'paying' || order.status === 'waiting') {
-    order.status = 'pending_confirm';
     order.reportedAt = new Date().toISOString();
-    await saveOrders();
-    console.log(`>>> [UID收银台] 用户报告支付完成（待确认）: ${outTradeNo}, 金额: ¥${order.amount}`);
 
-    // 如果有支付宝SDK，启动自动确认（交易查询+账单兜底）
-    startAutoConfirm(order);
+    // UID 商户未配置支付宝 SDK：用户报告支付完成后直接标记为已到账，
+    // 后台通过轮询实时查看，无需应用凭证。
+    if (!alipaySdk) {
+      order.status = 'paid';
+      order.paidAt = new Date().toISOString();
+      order.tradeNo = 'USER_REPORT_' + Date.now();
+      order.autoConfirmed = true;
+      order.confirmMethod = 'user_report';
+      const cachedOrder = cashierOrders.get(outTradeNo);
+      if (cachedOrder) {
+        cachedOrder.status = 'paid';
+        cachedOrder.tradeNo = order.tradeNo;
+        cashierOrders.set(outTradeNo, cachedOrder);
+      }
+      await saveOrders();
+      console.log(`>>> [UID收银台] 用户报告支付完成（已自动到账）: ${outTradeNo}, 金额: ¥${order.amount}`);
+    } else {
+      order.status = 'pending_confirm';
+      await saveOrders();
+      console.log(`>>> [UID收银台] 用户报告支付完成（待确认）: ${outTradeNo}, 金额: ¥${order.amount}`);
+      // 如果有支付宝SDK，启动自动确认（交易查询+账单兜底）
+      startAutoConfirm(order);
+    }
   }
 
   res.json({ code: 'OK', message: '已收到支付报告', status: order.status });
