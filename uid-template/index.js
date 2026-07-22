@@ -1744,7 +1744,7 @@ app.get('/pay/', (req, res) => {
     <!-- 跳转中视图 -->
     <div class="jump-view" id="jumpView">
       <div class="logo">紫码PAY</div>
-      <div class="brand">HEIJIN PAY</div>
+      <div class="brand">紫码支付</div>
       <div class="amount-label">支付金额</div>
       <div class="amount">¥${amount.toFixed(2)}</div>
       ${memo ? `<div class="memo">${memo}</div>` : ''}
