@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>订单管理 - 黄桂鹏商户后台</title>
+<title>订单管理 - 商户后台</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
@@ -3876,6 +3876,7 @@ function updateSecurityUI() {
   var topAvatar = document.getElementById('topNavAvatar');
   if (topName && mName) { topName.textContent = mName.length > 3 ? mName.substring(0, 3) + '...' : mName; }
   if (topAvatar && mName) { topAvatar.textContent = mName.charAt(0); }
+  if (mName) { document.title = '订单管理 - ' + mName + '商户后台'; }
 
   // 渲染收款二维码
   renderMerchantQRCode();
