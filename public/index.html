@@ -3186,10 +3186,33 @@ function showToast(msg, type) {
   toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
-// ===== 初始化 =====
-checkAuth();
-fetchMerchants();
-fetchGroups();
+// ===== 初始化（合并请求，减少首屏 RTT）=====
+async function initApp() {
+  const token = getToken();
+  if (!token) return location.href = 'login.html';
+  try {
+    const res = await fetch('/api/admin/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+      body: JSON.stringify({ token })
+    });
+    const json = await res.json();
+    if (json.code === 'UNAUTH' || !json.loggedIn) return location.href = 'login.html';
+    document.body.classList.add('ready');
+    // 一次性拿到所有数据，无需再发 3 个请求
+    merchants = json.merchants || [];
+    groups = json.groups || [];
+    // 渲染统计
+    const stats = json.stats || {};
+    document.getElementById('statTotal').textContent = stats.total || 0;
+    document.getElementById('statToday').textContent = stats.today || 0;
+    renderMerchants();
+    renderGroups();
+  } catch (e) {
+    location.href = 'login.html';
+  }
+}
+initApp();
 
 // ESC 关闭弹窗
 document.addEventListener('keydown', (e) => {

@@ -3278,11 +3278,18 @@ function fmtChartVal(val) {
   var s = fixed.toFixed(2);
   return s.replace(/0+$/, '').replace(/\.$/, '');
 }
-// 加载仪表盘数据
+// 加载仪表盘数据（支持预取数据，避免重复请求）
+var _presetOrdersData = null;
 async function loadDashboard() {
   try {
-    const res = await fetch('api/orders');
-    const json = await res.json();
+    var json;
+    if (_presetOrdersData) {
+      json = _presetOrdersData;
+      _presetOrdersData = null; // 用完即清，后续 setInterval 重新 fetch
+    } else {
+      const res = await fetch('api/orders');
+      json = await res.json();
+    }
     if (json.code !== 'OK') return;
     allOrders = json.data;
 
@@ -3654,11 +3661,7 @@ function dashPageChange(page, totalPages) {
   renderRecentOrders(allOrders);
 }
 
-// 首次加载
-loadDashboard();
-loadSecurityConfig();
-
-// 每10秒自动刷新仪表盘
+// 每10秒自动刷新仪表盘（首次加载由 DOMContentLoaded 触发）
 setInterval(loadDashboard, 10000);
 
 // ==================== 通用紫码提示弹窗（替代所有alert） ====================
@@ -4603,15 +4606,34 @@ document.addEventListener('DOMContentLoaded', async function() {
     return;
   }
 
+  // 乐观预取：在 checkLoginStatus 等待期间就并行发起数据请求，减少总等待时间
+  var _presetOrders = fetch('api/orders').then(function(r) { return r.json(); }).catch(function() { return null; });
+  var _presetSecurity = fetch('api/security').then(function(r) { return r.json(); }).catch(function() { return null; });
+
   // 先检查登录状态
   const loggedIn = await checkLoginStatus();
   if (!loggedIn) return; // 未登录已跳转
+
+  // 将预取结果暂存，供 loadDashboard 使用（避免 switchPage 内再发一次请求）
+  try {
+    var _po = await _presetOrders;
+    if (_po && _po.code === 'OK') _presetOrdersData = _po;
+  } catch(e) {}
 
   // 初始化页面状态：恢复上次访问的页面（默认主页）
   var savedPage = 'home';
   try { savedPage = localStorage.getItem('admin_active_page') || 'home'; } catch(e) {}
   if (!['home','manage','orders','limits','security'].includes(savedPage)) savedPage = 'home';
   switchPage(savedPage);
+
+  // 预取安全设置数据，供 updateSecurityUI 使用
+  try {
+    var _ps = await _presetSecurity;
+    if (_ps && _ps.code === 'OK') {
+      securityData = _ps.data;
+      updateSecurityUI();
+    }
+  } catch(e) {}
 
   // 商户名称输入框 → 同步右上角导航栏商户名+头像首字 + 防抖保存到服务端
   var nameInput = document.getElementById('merchantNameInput');

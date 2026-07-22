@@ -341,6 +341,7 @@ async function initDb() {
 // ======================== 数据写入同步（JSON + PostgreSQL） ========================
 function saveMerchantsWithSync(list) {
   fs.writeFileSync(MERCHANTS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  invalidateMerchantsCache(); // 写入后失效缓存
   if (pgPool) {
     syncMerchantsToDb(pgPool, list).catch(err => console.error('[DB] 同步 merchants 失败:', err.message));
   }
@@ -646,10 +647,22 @@ function getGroupDir(id) {
   return dir;
 }
 
+// 内存缓存：避免每次请求都 fs.readFileSync + JSON.parse
+let _groupsCache = null;
+let _groupsCacheMtime = 0;
+
 function loadGroups() {
-  try { return JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf-8')); }
-  catch { return []; }
+  try {
+    const stat = fs.statSync(GROUPS_FILE);
+    if (_groupsCache && stat.mtimeMs === _groupsCacheMtime) return _groupsCache;
+    _groupsCache = JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf-8'));
+    _groupsCacheMtime = stat.mtimeMs;
+    return _groupsCache;
+  } catch { return []; }
 }
+
+// 写入后主动更新缓存
+function invalidateGroupsCache() { _groupsCache = null; _groupsCacheMtime = 0; }
 
 async function saveGroups(list) {
   // 保护：空 list 写入会清空 DB（syncGroupsToDb 是 DELETE+INSERT 模式）
@@ -665,6 +678,7 @@ async function saveGroups(list) {
     } catch (e) { /* 忽略查询失败 */ }
   }
   fs.writeFileSync(GROUPS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  invalidateGroupsCache(); // 写入后失效缓存
   if (pgPool) {
     try {
       await syncGroupsToDb(pgPool, list);
@@ -1126,10 +1140,22 @@ function confirmFromBill(order, matchedRecord, merchantId, rt, outTradeNo) {
 
 // ======================== 工具函数 ========================
 
+// 内存缓存：避免每次请求都 fs.readFileSync + JSON.parse
+let _merchantsCache = null;
+let _merchantsCacheMtime = 0;
+
 function loadMerchants() {
-  try { return JSON.parse(fs.readFileSync(MERCHANTS_FILE, 'utf-8')); }
-  catch { return []; }
+  try {
+    const stat = fs.statSync(MERCHANTS_FILE);
+    if (_merchantsCache && stat.mtimeMs === _merchantsCacheMtime) return _merchantsCache;
+    _merchantsCache = JSON.parse(fs.readFileSync(MERCHANTS_FILE, 'utf-8'));
+    _merchantsCacheMtime = stat.mtimeMs;
+    return _merchantsCache;
+  } catch { return []; }
 }
+
+// 写入后主动更新缓存（避免下一次请求的 mtime 检测延迟）
+function invalidateMerchantsCache() { _merchantsCache = null; _merchantsCacheMtime = 0; }
 
 function saveMerchants(list) {
   saveMerchantsWithSync(list);
@@ -1375,6 +1401,25 @@ app.post('/api/admin/check', (req, res) => {
   const token = cleanToken(req.headers.authorization || req.body.token);
   const session = adminSessions.get(token);
   res.json({ code: 'OK', loggedIn: !!(session && Date.now() - session.createdAt < SESSION_TTL) });
+});
+
+// 合并接口：一次返回鉴权状态 + 商户列表 + 组列表 + 统计，减少首屏 RTT
+app.post('/api/admin/init', requireAuth, (req, res) => {
+  const list = loadMerchants().map(m => ({ ...m, password: undefined }));
+  const groups = loadGroups();
+  for (const m of list) {
+    if (m.groupId) {
+      const g = groups.find(x => x.id === m.groupId);
+      if (g) m.groupName = g.name;
+    }
+  }
+  const groupsOut = groups.map(g => {
+    const rt = groupRuntimes.get(g.id);
+    return { ...g, nextIndex: rt ? rt.nextIndex : 0, roundCount: rt ? rt.roundCount : 0 };
+  });
+  const today = new Date().toDateString();
+  const todayCount = list.filter(m => new Date(m.createdAt).toDateString() === today).length;
+  res.json({ code: 'OK', loggedIn: true, merchants: list, groups: groupsOut, stats: { total: list.length, today: todayCount } });
 });
 
 app.post('/api/admin/logout', (req, res) => {
